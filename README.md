@@ -19,13 +19,16 @@ pnpm install
 ```
 
 ### 2. Set API Keys
-You will need an AI provider key to run the Agent commands.
+You will need an AI provider key to run the Agent commands. If you don't have one, you can obtain them here:
+- **OpenAI API Key**: Get it at [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+- **Gemini API Key**: Get it at [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+- **Anthropic API Key**: Get it at [https://console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
 
 ```bash
 cd apps/host
 cp .env.example .env.local
 ```
-Update `.env.local` to include your `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` (depending on what you hook up in `/api/agent/route.ts`).
+Update `.env.local` to include your API key (e.g., `OPENAI_API_KEY`) depending on what you configured in your host application's `/api/agent/route.ts`.
 
 ### 3. Start Development Mode
 
