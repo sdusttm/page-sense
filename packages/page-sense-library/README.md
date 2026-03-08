@@ -45,7 +45,26 @@ export default function MyPage() {
 }
 ```
 
-### 3. Agent Execution Pipeline
+### 3. Build the Backend API Routes (Required!)
+The `page-sense-library` is strictly a secure, frontend client library. It *cannot* hold your private AI API keys. To make the AI Monitor function, your host application must expose two backend API endpoints to securely bridge the browser to the LLM.
+
+#### A. `/api/agent` (for executing clicks/typing)
+This route receives `{ instruction, snapshot }` from the `AiBehaviorMonitor`. 
+**Your backend must:**
+1. Connect to an LLM securely using your API key.
+2. Provide a system prompt telling the AI to read the snapshot and output a strict JSON array of commands.
+3. Return: `{ "commands": [ { "action": "click", "agent_id": "5" } ] }`
+
+#### B. `/api/visualize` (for the AI Imagination tab)
+This route receives `{ snapshot }` from the `AiBehaviorMonitor`.
+**Your backend must:**
+1. Securely connect to an LLM.
+2. Ask the LLM to write raw HTML/CSS visualizing the page based *only* on the DOM snapshot text.
+3. Return: `{ "html": "<html><body>...</body></html>" }`
+
+*(Tip: You can find fully working, copy-pasteable Next.js examples of both these routes inside the `apps/host/src/app/api/` folder in this GitHub repository!)*
+
+### 4. Agent Execution Pipeline
 The `<AiBehaviorMonitor />` has an instruction chat that allows you to type natural language commands. 
 
 **How it works under the hood:**
