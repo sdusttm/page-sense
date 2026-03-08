@@ -1,0 +1,16 @@
+{
+  "name": "page-sense",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm -r run dev"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@types/node": "^20.19.37"
+  }
+}

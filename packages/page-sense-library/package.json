@@ -1,0 +1,43 @@
+{
+    "name": "page-sense-library",
+    "version": "0.1.0",
+    "description": "React library to track user behavior and allow AI LLM agents to natively understand and interact with the DOM.",
+    "author": "",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/sdusttm/page-sense.git"
+    },
+    "keywords": [
+        "ai",
+        "react",
+        "agent",
+        "llm",
+        "automation",
+        "dom",
+        "tracking",
+        "browser"
+    ],
+    "main": "./dist/index.js",
+    "module": "./dist/index.mjs",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch"
+    },
+    "dependencies": {
+        "dom-to-semantic-markdown": "^1.5.0"
+    },
+    "peerDependencies": {
+        "react": "^18.0.0 || ^19.0.0",
+        "react-dom": "^18.0.0 || ^19.0.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.0",
+        "@types/react-dom": "^18.2.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "tsup": "^8.0.0",
+        "typescript": "^5.0.0"
+    }
+}
