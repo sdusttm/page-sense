@@ -74,3 +74,4 @@ The `<AiBehaviorMonitor />` has an instruction chat that allows you to type natu
 4. The snapshot and your natural language instruction are POSTed to `/api/agent`.
 5. Your API route runs the LLM, asking it to output a requested `action` ('click' or 'type') and the corresponding `agent_id`.
 6. Our React context natively executes `element.scrollIntoView()` and `element.click()` with an aesthetic visual delay!
+
