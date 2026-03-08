@@ -90,9 +90,29 @@ export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number
     }, [maxEvents]);
 
     const executeAgentCommand = useCallback(async (action: 'click' | 'type', agentId: string, value?: string) => {
-        const element = document.querySelector(`[data-agent-id="${agentId}"]`);
+        // Retry with exponential backoff to find dynamically loaded elements
+        let element: Element | null = null;
+        let attempts = 0;
+        const maxAttempts = 5;
+
+        while (!element && attempts < maxAttempts) {
+            element = document.querySelector(`[data-agent-id="${agentId}"]`);
+
+            if (!element) {
+                if (attempts < maxAttempts - 1) {
+                    // Exponential backoff: 100ms, 200ms, 400ms, 800ms
+                    const delay = Math.min(100 * Math.pow(2, attempts), 1000);
+                    console.log(`[Agent] Element ${agentId} not found, retrying in ${delay}ms (attempt ${attempts + 1}/${maxAttempts})`);
+                    await new Promise(r => setTimeout(r, delay));
+                    attempts++;
+                } else {
+                    console.warn(`Agent attempted to interact with non-existent element with agent_id: ${agentId}`);
+                    throw new Error(`Element not found after ${maxAttempts} attempts: ${agentId}`);
+                }
+            }
+        }
+
         if (!element) {
-            console.warn(`Agent attempted to interact with non-existent element with agent_id: ${agentId}`);
             throw new Error(`Element not found: ${agentId}`);
         }
 

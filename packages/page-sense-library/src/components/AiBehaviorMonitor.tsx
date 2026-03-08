@@ -54,7 +54,12 @@ const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }
                         try {
                             await executeAgentCommand(cmd.action, cmd.agent_id, cmd.value);
                             successCount++;
-                            await new Promise(r => setTimeout(r, 500)); // slight delay if multiple cmds
+
+                            // Longer delay after clicks (likely to trigger UI changes like opening modals, dropdowns, etc.)
+                            // Shorter delay after typing (usually doesn't change UI structure)
+                            const isUIChangingAction = cmd.action === 'click';
+                            const delay = isUIChangingAction ? 1500 : 500;
+                            await new Promise(r => setTimeout(r, delay));
                         } catch (err: any) {
                             throw new Error(`Failed to execute command on element. It might not be visible or available. Details: ${err.message}`);
                         }
