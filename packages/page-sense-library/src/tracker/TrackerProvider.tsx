@@ -26,6 +26,8 @@ export type TrackerContextType = {
     isPaused: boolean;
     setIsPaused: React.Dispatch<React.SetStateAction<boolean>>;
     executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>;
+    apiUrl: string;
+    apiKey?: string;
 };
 
 export const TrackerContext = createContext<TrackerContextType | null>(null);
@@ -71,7 +73,7 @@ const extractSemanticData = (element: Element | null) => {
     };
 };
 
-export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number }> = ({ children, maxEvents = 100 }) => {
+export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number; apiUrl?: string; apiKey?: string }> = ({ children, maxEvents = 100, apiUrl = '/api', apiKey }) => {
     const [events, setEvents] = useState<InteractionEvent[]>([]);
     const [isPaused, setIsPaused] = useState(false);
 
@@ -215,7 +217,7 @@ export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number
     }, [addEvent, isPaused]);
 
     return (
-        <TrackerContext.Provider value={{ events, isPaused, setIsPaused, executeAgentCommand }}>
+        <TrackerContext.Provider value={{ events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey }}>
             {children}
         </TrackerContext.Provider>
     );

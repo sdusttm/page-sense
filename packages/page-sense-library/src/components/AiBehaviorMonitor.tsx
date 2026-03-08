@@ -4,7 +4,7 @@ import { useTracker } from '../tracker/useTracker';
 import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
 import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations } from '../utils/annotator';
 
-const AgentInstructionForm = React.memo(({ executeAgentCommand }: { executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void> }) => {
+const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }: { executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>, apiUrl: string, apiKey?: string }) => {
     const [instruction, setInstruction] = useState('');
     const [isExecuting, setIsExecuting] = useState(false);
     const [executionError, setExecutionError] = useState<string | null>(null);
@@ -28,9 +28,14 @@ const AgentInstructionForm = React.memo(({ executeAgentCommand }: { executeAgent
             clearVisualAnnotations(document.body);
 
             // 4. Send instruction to LLM Agent API
-            const res = await fetch('/api/agent', {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+
+            const res = await fetch(`${apiUrl.replace(/\/$/, '')}/agent`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ instruction, snapshot })
             });
 
@@ -123,7 +128,7 @@ const AgentInstructionForm = React.memo(({ executeAgentCommand }: { executeAgent
 });
 
 export const AiBehaviorMonitor: React.FC = () => {
-    const { events, isPaused, setIsPaused, executeAgentCommand } = useTracker();
+    const { events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey } = useTracker();
     const [isOpen, setIsOpen] = useState(false);
 
     // AI Visualization state
@@ -208,9 +213,14 @@ export const AiBehaviorMonitor: React.FC = () => {
         setActiveTab('result'); // Default to result tab
 
         try {
-            const res = await fetch('/api/visualize', {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+
+            const res = await fetch(`${apiUrl.replace(/\/$/, '')}/visualize`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ snapshot })
             });
             const data = await res.json();
@@ -300,7 +310,7 @@ export const AiBehaviorMonitor: React.FC = () => {
             </div>
 
             {/* Agent Instruction UI extracted to prevent focus loss on parent re-render */}
-            <AgentInstructionForm executeAgentCommand={executeAgentCommand} />
+            <AgentInstructionForm executeAgentCommand={executeAgentCommand} apiUrl={apiUrl} apiKey={apiKey} />
 
             <div style={{ padding: '12px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
