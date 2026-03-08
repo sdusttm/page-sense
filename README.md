@@ -18,17 +18,13 @@ This project uses `pnpm` workspaces.
 pnpm install
 ```
 
-### 2. Set API Keys
-You will need an AI provider key to run the Agent commands. If you don't have one, you can obtain them here:
-- **OpenAI API Key**: Get it at [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-- **Gemini API Key**: Get it at [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-- **Anthropic API Key**: Get it at [https://console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+### 2. Configure API Keys
+The `page-sense-library` requires an API Key to execute LLM Actions.
+This repository uses the production **Central API Gateway**:
 
-```bash
-cd apps/host
-cp .env.example .env.local
-```
-Update `.env.local` to include your API key (e.g., `OPENAI_API_KEY`) depending on what you configured in your host application's `/api/agent/route.ts`.
+1. Open `https://www.pagesense.tech/login` and sign up for an account.
+2. Go to the API Keys Dashboard and generate a new key (`sk-ps-...`).
+3. Open `apps/host/src/app/providers.tsx` and paste the generated key into the `<TrackerProvider>`'s `apiKey` prop!
 
 ### 3. Start Development Mode
 
