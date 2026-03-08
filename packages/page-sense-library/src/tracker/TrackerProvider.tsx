@@ -158,6 +158,11 @@ export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number
             if (isPaused) return;
             const target = e.target as HTMLElement;
 
+            // Don't track clicks on the AI Monitor itself
+            if (target.closest('#ai-page-sense-monitor-root')) {
+                return;
+            }
+
             let snapshot = undefined;
             try {
                 // Capture a lightweight markdown snapshot of the body

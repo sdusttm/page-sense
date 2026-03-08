@@ -18,6 +18,10 @@ const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }
         setSuccessMessage(null);
 
         try {
+            // Wait briefly for any pending DOM updates or async content to load
+            // This ensures we capture the most up-to-date page state
+            await new Promise(resolve => setTimeout(resolve, 300));
+
             // 1. Annotate DOM
             annotateInteractiveElements(document.body);
 
@@ -190,17 +194,20 @@ export const AiBehaviorMonitor: React.FC = () => {
     };
 
     const handleVisualize = async () => {
-        // Find latest snapshot or generate one
+        // Always capture a FRESH snapshot of current page state
+        // This ensures we capture dynamically loaded content
         let snapshot = null;
-        for (let i = 0; i < events.length; i++) {
-            if (events[i].snapshot) {
-                snapshot = events[i].snapshot;
-                break;
-            }
+        try {
+            snapshot = convertHtmlToMarkdown(document.body.outerHTML);
+        } catch (err) {
+            console.error("Failed to capture snapshot for visualization:", err);
+            setVisualizationError("Failed to capture page snapshot. Please try again.");
+            setShowVisualizationModal(true);
+            return;
         }
 
         if (!snapshot) {
-            setVisualizationError("No snapshot data available in events yet. Try interacting with the page first.");
+            setVisualizationError("Failed to capture page snapshot. Please try again.");
             setShowVisualizationModal(true);
             return;
         }
@@ -244,6 +251,7 @@ export const AiBehaviorMonitor: React.FC = () => {
     if (!isOpen) {
         return (
             <button
+                id="ai-page-sense-monitor-root"
                 onClick={() => setIsOpen(true)}
                 style={{
                     position: 'fixed',
@@ -267,7 +275,9 @@ export const AiBehaviorMonitor: React.FC = () => {
     }
 
     return (
-        <div style={{
+        <div
+            id="ai-page-sense-monitor-root"
+            style={{
             position: 'fixed',
             bottom: '20px',
             right: '20px',
