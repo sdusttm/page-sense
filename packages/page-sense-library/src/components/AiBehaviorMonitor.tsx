@@ -6,6 +6,100 @@ import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations }
 import { removeLibraryElements, restoreLibraryElements } from '../utils/cleanCapture';
 import { VERSION, BUILD_TIME } from '../version';
 
+// Cross-page execution state interface
+interface CrossPageExecutionState {
+    instruction: string;
+    previousActions: string[];
+    iterationCount: number;
+    threadId: string;
+    timestamp: number;
+    url: string;
+}
+
+// Cross-page execution helpers
+const CROSS_PAGE_STORAGE_KEY = 'page-sense-cross-page-execution';
+const CROSS_PAGE_TIMEOUT_MS = 15000; // 15 seconds max to resume
+
+const saveCrossPageState = (state: CrossPageExecutionState) => {
+    try {
+        localStorage.setItem(CROSS_PAGE_STORAGE_KEY, JSON.stringify(state));
+        console.log('[Cross-Page] Saved execution state:', state);
+    } catch (err) {
+        console.error('[Cross-Page] Failed to save state:', err);
+    }
+};
+
+const loadCrossPageState = (): CrossPageExecutionState | null => {
+    try {
+        const stored = localStorage.getItem(CROSS_PAGE_STORAGE_KEY);
+        if (!stored) return null;
+
+        const state = JSON.parse(stored) as CrossPageExecutionState;
+
+        // Check if state is recent (within timeout)
+        if (Date.now() - state.timestamp > CROSS_PAGE_TIMEOUT_MS) {
+            console.log('[Cross-Page] State expired, clearing');
+            clearCrossPageState();
+            return null;
+        }
+
+        console.log('[Cross-Page] Loaded execution state:', state);
+        return state;
+    } catch (err) {
+        console.error('[Cross-Page] Failed to load state:', err);
+        return null;
+    }
+};
+
+const clearCrossPageState = () => {
+    try {
+        localStorage.removeItem(CROSS_PAGE_STORAGE_KEY);
+        console.log('[Cross-Page] Cleared execution state');
+    } catch (err) {
+        console.error('[Cross-Page] Failed to clear state:', err);
+    }
+};
+
+// Check if element is a navigation link (will cause page reload)
+const isNavigationLink = (agentId: string): boolean => {
+    try {
+        const element = document.querySelector(`[data-agent-id="${agentId}"]`);
+        if (!element) return false;
+
+        // Check if it's an anchor tag
+        if (element.tagName === 'A') {
+            const href = element.getAttribute('href');
+            // Navigation links: external URLs, relative paths, but NOT hash links or javascript
+            if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+                // Check if it's a different page (not same origin + path)
+                try {
+                    const currentPath = window.location.pathname;
+                    const linkUrl = new URL(href, window.location.origin);
+                    const isExternal = linkUrl.origin !== window.location.origin;
+                    const isDifferentPath = linkUrl.pathname !== currentPath;
+
+                    return isExternal || isDifferentPath;
+                } catch {
+                    // If URL parsing fails, assume it's a navigation
+                    return true;
+                }
+            }
+        }
+
+        // Check if element has onclick that might navigate
+        // (This is heuristic, not foolproof)
+        const onClick = element.getAttribute('onclick');
+        if (onClick && (onClick.includes('location') || onClick.includes('navigate'))) {
+            return true;
+        }
+
+        return false;
+    } catch (err) {
+        console.error('[Cross-Page] Error checking navigation:', err);
+        return false;
+    }
+};
+
 // Helper to compare two snapshots and show what changed
 function compareSnapshots(oldSnapshot: string, newSnapshot: string) {
     const oldLines = oldSnapshot.split('\n');
@@ -49,20 +143,74 @@ const AgentInstructionForm = React.memo(({
     const [isExecuting, setIsExecuting] = useState(false);
     const [executionError, setExecutionError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
+    const [executedActions, setExecutedActions] = useState<string[]>([]);
+    const [showActionDetails, setShowActionDetails] = useState(false);
+    const hasResumedRef = useRef(false);
 
-    const handleExecuteInstruction = async () => {
-        if (!instruction.trim()) return;
+    // Check for cross-page execution state on mount
+    useEffect(() => {
+        const resumeExecution = async () => {
+            // Only resume once
+            if (hasResumedRef.current) return;
+            hasResumedRef.current = true;
+
+            const state = loadCrossPageState();
+            if (!state) return;
+
+            // Verify threadId matches (avoid resuming wrong session)
+            if (state.threadId !== threadId) {
+                console.log('[Cross-Page] ThreadId mismatch, clearing state');
+                clearCrossPageState();
+                return;
+            }
+
+            console.log('[Cross-Page] Resuming execution after page navigation');
+            console.log('[Cross-Page] Previous URL:', state.url);
+            console.log('[Cross-Page] Current URL:', window.location.href);
+            console.log('[Cross-Page] Previous actions:', state.previousActions);
+
+            // Show resuming message
+            onAddMessage({
+                role: 'system',
+                content: `🔄 Resuming task after page navigation... (${state.previousActions.length} actions completed)`,
+                timestamp: new Date().toISOString()
+            });
+
+            // Wait for page to fully load and render
+            await new Promise(resolve => setTimeout(resolve, 2500));
+
+            // Resume execution
+            await handleExecuteInstruction(state.instruction, {
+                previousActions: state.previousActions,
+                iterationCount: state.iterationCount
+            });
+        };
+
+        resumeExecution();
+    }, [threadId]); // Only run when threadId is available
+
+    const handleExecuteInstruction = async (
+        instructionOverride?: string,
+        resumeState?: {
+            previousActions: string[];
+            iterationCount: number;
+        }
+    ) => {
+        const currentInstruction = instructionOverride || instruction;
+        if (!currentInstruction.trim()) return;
 
         setIsExecuting(true);
         setExecutionError(null);
         setSuccessMessage(null);
 
-        // Add user message to conversation
-        onAddMessage({
-            role: 'user',
-            content: instruction,
-            timestamp: new Date().toISOString()
-        });
+        // Add user message to conversation (only if not resuming)
+        if (!resumeState) {
+            onAddMessage({
+                role: 'user',
+                content: currentInstruction,
+                timestamp: new Date().toISOString()
+            });
+        }
 
         try {
             // Helper function to capture a clean snapshot
@@ -71,14 +219,20 @@ const AgentInstructionForm = React.memo(({
                 // Increased to 1200ms to ensure dropdowns are fully rendered
                 await new Promise(resolve => setTimeout(resolve, 1200));
 
-                // 1. Remove library UI FIRST (before annotation)
+                // 1. Clear any old annotations from previous iteration
+                //    This ensures new elements (like dropdown items) get fresh IDs
+                clearAnnotations(document.body);
+                console.log(`[Snapshot] Cleared old annotations`);
+
+                // 2. Remove library UI FIRST (before annotation)
                 const removedElements = removeLibraryElements();
 
-                // 2. THEN annotate only the page elements (library UI is already gone)
+                // 3. THEN annotate ALL interactive elements with fresh IDs
+                //    (library UI is already gone, so only page elements are annotated)
                 const annotatedCount = annotateInteractiveElements(document.body);
-                console.log(`[Snapshot] Annotated ${annotatedCount} interactive elements`);
+                console.log(`[Snapshot] Annotated ${annotatedCount} interactive elements (fresh IDs)`);
 
-                // 3. Capture CLEAN snapshot (without library UI)
+                // 4. Capture CLEAN snapshot (without library UI)
                 const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
 
                 // Debug: Log snapshot details and search for common dropdown keywords
@@ -90,10 +244,10 @@ const AgentInstructionForm = React.memo(({
                 const snapshotLines = snapshot.split('\n').slice(0, 50);
                 console.log(`[Snapshot] First 50 lines:`, snapshotLines.join('\n'));
 
-                // 4. Restore library UI immediately
+                // 5. Restore library UI immediately
                 restoreLibraryElements(removedElements);
 
-                // 5. Clean up VISUAL annotation text nodes
+                // 6. Clean up VISUAL annotation text nodes (but keep data-agent-id for execution)
                 clearVisualAnnotations(document.body);
 
                 return snapshot;
@@ -112,7 +266,7 @@ const AgentInstructionForm = React.memo(({
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
-                        instruction,
+                        instruction: currentInstruction,
                         snapshot,
                         threadId,
                         url: window.location.href,
@@ -133,12 +287,13 @@ const AgentInstructionForm = React.memo(({
             };
 
             // Sequential execution: take snapshot -> get action -> execute -> repeat
-            let successCount = 0;
+            let successCount = resumeState ? resumeState.previousActions.length : 0;
             const maxIterations = 5; // Prevent infinite loops
-            const previousActions: string[] = [];
+            const previousActions: string[] = resumeState ? [...resumeState.previousActions] : [];
             let previousSnapshot: string | null = null;
+            const startIteration = resumeState ? resumeState.iterationCount : 0;
 
-            for (let iteration = 0; iteration < maxIterations; iteration++) {
+            for (let iteration = startIteration; iteration < maxIterations; iteration++) {
                 console.log(`[Iteration ${iteration + 1}/${maxIterations}] Starting...`);
 
                 // 1. Capture fresh snapshot (shows current state after any previous actions)
@@ -198,11 +353,36 @@ const AgentInstructionForm = React.memo(({
                 if (cmd.action && cmd.agent_id) {
                     try {
                         console.log(`[Iteration ${iteration + 1}] Executing: ${cmd.action} on agent_id="${cmd.agent_id}"`);
-                        await executeAgentCommand(cmd.action, cmd.agent_id, cmd.value);
-                        successCount++;
 
                         // Track what action was taken for context
                         const actionDescription = `${cmd.action} on ${cmd.agent_id}${cmd.value ? ` with value "${cmd.value}"` : ''}`;
+
+                        // Check if this action will cause page navigation
+                        if (cmd.action === 'click' && isNavigationLink(cmd.agent_id)) {
+                            console.log('[Cross-Page] Detected navigation link, saving state before click');
+
+                            // Save state BEFORE executing (in case page unloads)
+                            const crossPageState: CrossPageExecutionState = {
+                                instruction: currentInstruction,
+                                previousActions: [...previousActions, actionDescription],
+                                iterationCount: iteration + 1,
+                                threadId,
+                                timestamp: Date.now(),
+                                url: window.location.href
+                            };
+
+                            saveCrossPageState(crossPageState);
+
+                            onAddMessage({
+                                role: 'system',
+                                content: `🔄 Navigating to new page... (will resume automatically)`,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+
+                        await executeAgentCommand(cmd.action, cmd.agent_id, cmd.value);
+                        successCount++;
+
                         previousActions.push(actionDescription);
                         console.log(`[Iteration ${iteration + 1}] Action completed: ${actionDescription}`);
 
@@ -234,21 +414,36 @@ const AgentInstructionForm = React.memo(({
             }
 
             setInstruction(''); // clear input on success!
+
+            // Clear cross-page state on successful completion
+            clearCrossPageState();
+
             if (successCount > 0) {
                 const responseMsg = `✅ Successfully executed ${successCount} action${successCount > 1 ? 's' : ''}`;
                 setSuccessMessage(responseMsg);
-                setTimeout(() => setSuccessMessage(null), 4000);
+                setExecutedActions(previousActions); // Store actions for expandable details
+                setShowActionDetails(false); // Reset expansion state
+                setTimeout(() => {
+                    setSuccessMessage(null);
+                    setExecutedActions([]);
+                }, 8000); // Increased timeout to give time to expand
 
-                // Add assistant response to conversation
+                // Add assistant response to conversation with details
+                const detailsText = previousActions.length > 0
+                    ? `\n\nActions:\n${previousActions.map((action, idx) => `${idx + 1}. ${action}`).join('\n')}`
+                    : '';
                 onAddMessage({
                     role: 'assistant',
-                    content: responseMsg,
+                    content: responseMsg + detailsText,
                     timestamp: new Date().toISOString()
                 });
             }
         } catch (err: any) {
             const errorMsg = err.message || 'An error occurred';
             setExecutionError(errorMsg);
+
+            // Clear cross-page state on error
+            clearCrossPageState();
 
             // Add error to conversation
             onAddMessage({
@@ -270,8 +465,55 @@ const AgentInstructionForm = React.memo(({
                 </div>
             )}
             {successMessage && (
-                <div style={{ color: 'green', fontSize: '10px', marginBottom: '8px', padding: '4px', backgroundColor: '#efe', borderRadius: '4px' }}>
-                    {successMessage}
+                <div style={{
+                    color: 'green',
+                    fontSize: '10px',
+                    marginBottom: '8px',
+                    padding: '8px',
+                    backgroundColor: '#efe',
+                    borderRadius: '4px',
+                    border: '1px solid #4caf50'
+                }}>
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        cursor: executedActions.length > 0 ? 'pointer' : 'default'
+                    }}
+                    onClick={() => executedActions.length > 0 && setShowActionDetails(!showActionDetails)}
+                    >
+                        <span>{successMessage}</span>
+                        {executedActions.length > 0 && (
+                            <span style={{
+                                fontSize: '12px',
+                                marginLeft: '8px',
+                                userSelect: 'none'
+                            }}>
+                                {showActionDetails ? '▼' : '▶'}
+                            </span>
+                        )}
+                    </div>
+                    {showActionDetails && executedActions.length > 0 && (
+                        <div style={{
+                            marginTop: '8px',
+                            paddingTop: '8px',
+                            borderTop: '1px solid #4caf50',
+                            fontSize: '9px',
+                            fontFamily: 'monospace'
+                        }}>
+                            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Actions executed:</div>
+                            {executedActions.map((action, idx) => (
+                                <div key={idx} style={{
+                                    padding: '2px 4px',
+                                    backgroundColor: '#fff',
+                                    marginBottom: '2px',
+                                    borderRadius: '2px'
+                                }}>
+                                    {idx + 1}. {action}
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             )}
             <form

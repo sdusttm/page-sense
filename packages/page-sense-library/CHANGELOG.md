@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-03-09
+
+### Added
+- **Cross-Page Action Support**: Sequential actions now work across page navigations!
+  - Detects when clicking a link will navigate to a new page
+  - Saves execution state to localStorage before navigation
+  - Auto-resumes on new page after it loads
+  - Works with traditional page reloads (not just SPA navigation)
+  - 15-second timeout for resume (prevents stale state)
+  - ThreadId validation ensures correct session resume
+- **Expandable Action Details**: Success messages now show clickable details
+  - Click success message to expand/collapse action list
+  - Shows exact actions with agent IDs and values
+  - Arrow indicator (▶/▼) for expand state
+  - Auto-hides after 8 seconds
+  - Actions saved to conversation history
+
+### Changed
+- Success message timeout increased from 4s to 8s to allow time to expand details
+- Resume delay increased to 2.5s to ensure new page fully loads
+
+### Documentation
+- Added `CROSS-PAGE-ACTIONS-ANALYSIS.md` - Solution analysis and architecture
+- Added `EXPANDABLE-ACTION-DETAILS.md` - UI feature documentation
+- Updated FEATURES list in version.ts
+
 ## [0.2.1] - 2026-03-09
 
 ### Added
