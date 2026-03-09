@@ -28,6 +28,7 @@ export type TrackerContextType = {
     executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>;
     apiUrl: string;
     apiKey?: string;
+    threadId: string;
 };
 
 export const TrackerContext = createContext<TrackerContextType | null>(null);
@@ -73,9 +74,37 @@ const extractSemanticData = (element: Element | null) => {
     };
 };
 
-export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number; apiUrl?: string; apiKey?: string }> = ({ children, maxEvents = 100, apiUrl = '/api', apiKey }) => {
+export const TrackerProvider: React.FC<{
+    children: ReactNode;
+    maxEvents?: number;
+    apiUrl?: string;
+    apiKey?: string;
+    enableCrossPageTracking?: boolean;
+}> = ({ children, maxEvents = 100, apiUrl = '/api', apiKey, enableCrossPageTracking = false }) => {
     const [events, setEvents] = useState<InteractionEvent[]>([]);
     const [isPaused, setIsPaused] = useState(false);
+    const [threadId, setThreadId] = useState<string>('');
+
+    // Initialize or restore thread ID from localStorage
+    useEffect(() => {
+        if (enableCrossPageTracking) {
+            const storageKey = 'page-sense-thread-id';
+            let storedThreadId = localStorage.getItem(storageKey);
+
+            if (!storedThreadId) {
+                storedThreadId = `thread_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                localStorage.setItem(storageKey, storedThreadId);
+                console.log('[PageSense] Created new thread:', storedThreadId);
+            } else {
+                console.log('[PageSense] Resumed thread:', storedThreadId);
+            }
+
+            setThreadId(storedThreadId);
+        } else {
+            // Non-persistent mode: create ephemeral thread ID
+            setThreadId(`session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
+        }
+    }, [enableCrossPageTracking]);
 
     const addEvent = useCallback((event: Omit<InteractionEvent, 'id' | 'timestamp'>) => {
         setEvents((prev) => {
@@ -186,6 +215,8 @@ export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number
             let snapshot = undefined;
             try {
                 // Capture a lightweight markdown snapshot of the body
+                // Note: This may include library UI, but that's OK for event tracking
+                // since these snapshots are truncated and just for debugging context
                 snapshot = convertHtmlToMarkdown(document.body.outerHTML);
                 // limit snapshot size just in case, though LLMs can handle a lot, we don't want to crash the browser UI
                 if (snapshot && snapshot.length > 5000) {
@@ -221,6 +252,12 @@ export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number
         const handleInput = (e: Event) => {
             if (isPaused) return;
             const target = e.target as HTMLInputElement;
+
+            // Don't track input on the AI Monitor itself
+            if (target.closest('#ai-page-sense-monitor-root')) {
+                return;
+            }
+
             addEvent({
                 type: 'input',
                 target: target.tagName?.toLowerCase() || 'unknown',
@@ -242,7 +279,7 @@ export const TrackerProvider: React.FC<{ children: ReactNode; maxEvents?: number
     }, [addEvent, isPaused]);
 
     return (
-        <TrackerContext.Provider value={{ events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey }}>
+        <TrackerContext.Provider value={{ events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey, threadId }}>
             {children}
         </TrackerContext.Provider>
     );

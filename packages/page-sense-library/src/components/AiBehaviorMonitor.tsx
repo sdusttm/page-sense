@@ -1,11 +1,50 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTracker } from '../tracker/useTracker';
 import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
 import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations } from '../utils/annotator';
+import { removeLibraryElements, restoreLibraryElements } from '../utils/cleanCapture';
 import { VERSION, BUILD_TIME } from '../version';
 
-const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }: { executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>, apiUrl: string, apiKey?: string }) => {
+// Helper to compare two snapshots and show what changed
+function compareSnapshots(oldSnapshot: string, newSnapshot: string) {
+    const oldLines = oldSnapshot.split('\n');
+    const newLines = newSnapshot.split('\n');
+
+    // Create sets for faster lookup
+    const oldSet = new Set(oldLines);
+    const newSet = new Set(newLines);
+
+    // Find added and removed lines
+    const addedLines = newLines.filter(line => !oldSet.has(line));
+    const removedLines = oldLines.filter(line => !newSet.has(line));
+
+    // Calculate stats
+    const addedChars = newSnapshot.length - oldSnapshot.length;
+    const addedElements = (newSnapshot.match(/\[ID: \d+\]/g) || []).length - (oldSnapshot.match(/\[ID: \d+\]/g) || []).length;
+
+    return {
+        addedLines,
+        removedLines,
+        addedChars,
+        addedElements,
+        summary: `${addedChars > 0 ? '+' : ''}${addedChars} chars, ${addedElements > 0 ? '+' : ''}${addedElements} elements`
+    };
+}
+
+const AgentInstructionForm = React.memo(({
+    executeAgentCommand,
+    apiUrl,
+    apiKey,
+    threadId,
+    onAddMessage
+}: {
+    executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>;
+    apiUrl: string;
+    apiKey?: string;
+    threadId: string;
+    onAddMessage: (message: { role: 'user' | 'assistant' | 'system'; content: string; timestamp: string }) => void;
+}) => {
     const [instruction, setInstruction] = useState('');
     const [isExecuting, setIsExecuting] = useState(false);
     const [executionError, setExecutionError] = useState<string | null>(null);
@@ -18,63 +57,205 @@ const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }
         setExecutionError(null);
         setSuccessMessage(null);
 
+        // Add user message to conversation
+        onAddMessage({
+            role: 'user',
+            content: instruction,
+            timestamp: new Date().toISOString()
+        });
+
         try {
-            // Wait briefly for any pending DOM updates or async content to load
-            // This ensures we capture the most up-to-date page state
-            await new Promise(resolve => setTimeout(resolve, 300));
+            // Helper function to capture a clean snapshot
+            const captureSnapshot = async () => {
+                // Wait for any pending React renders and dynamic content to load
+                // Increased to 1200ms to ensure dropdowns are fully rendered
+                await new Promise(resolve => setTimeout(resolve, 1200));
 
-            // 1. Annotate DOM
-            annotateInteractiveElements(document.body);
+                // 1. Remove library UI FIRST (before annotation)
+                const removedElements = removeLibraryElements();
 
-            // 2. Capture Snapshot
-            const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
+                // 2. THEN annotate only the page elements (library UI is already gone)
+                const annotatedCount = annotateInteractiveElements(document.body);
+                console.log(`[Snapshot] Annotated ${annotatedCount} interactive elements`);
 
-            // 3. Immediately clean up VISUAL text nodes so user doesn't see them during network request
-            clearVisualAnnotations(document.body);
+                // 3. Capture CLEAN snapshot (without library UI)
+                const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
 
-            // 4. Send instruction to LLM Agent API
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (apiKey) {
-                headers['Authorization'] = `Bearer ${apiKey}`;
-            }
+                // Debug: Log snapshot details and search for common dropdown keywords
+                console.log(`[Snapshot] Size: ${snapshot.length} chars`);
+                console.log(`[Snapshot] Contains "declaration"?`, snapshot.toLowerCase().includes('declaration'));
+                console.log(`[Snapshot] Contains "customs"?`, snapshot.toLowerCase().includes('customs'));
 
-            const res = await fetch(`${apiUrl.replace(/\/$/, '')}/agent`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({ instruction, snapshot })
-            });
+                // Show a portion of the snapshot to verify dropdown content
+                const snapshotLines = snapshot.split('\n').slice(0, 50);
+                console.log(`[Snapshot] First 50 lines:`, snapshotLines.join('\n'));
 
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Failed to execute instruction');
+                // 4. Restore library UI immediately
+                restoreLibraryElements(removedElements);
 
-            // 5. Execute commands returned by LLM
+                // 5. Clean up VISUAL annotation text nodes
+                clearVisualAnnotations(document.body);
+
+                return snapshot;
+            };
+
+            // Helper function to call LLM API
+            const callLLMAgent = async (snapshot: string, previousActions: string[] = []) => {
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                if (apiKey) {
+                    headers['Authorization'] = `Bearer ${apiKey}`;
+                }
+
+                console.log(`[LLM Call] Sending snapshot (${snapshot.length} chars) with previousActions:`, previousActions);
+
+                const res = await fetch(`${apiUrl.replace(/\/$/, '')}/agent`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        instruction,
+                        snapshot,
+                        threadId,
+                        url: window.location.href,
+                        previousActions // Include context of what actions were already taken
+                    })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to execute instruction');
+
+                console.log(`[LLM Response]`, {
+                    commands: data.commands?.length || 0,
+                    isComplete: data.isComplete,
+                    firstCommand: data.commands?.[0]
+                });
+
+                return data;
+            };
+
+            // Sequential execution: take snapshot -> get action -> execute -> repeat
             let successCount = 0;
-            if (data.commands && Array.isArray(data.commands)) {
-                for (const cmd of data.commands) {
-                    if (cmd.action && cmd.agent_id) {
-                        try {
-                            await executeAgentCommand(cmd.action, cmd.agent_id, cmd.value);
-                            successCount++;
+            const maxIterations = 5; // Prevent infinite loops
+            const previousActions: string[] = [];
+            let previousSnapshot: string | null = null;
 
-                            // Longer delay after clicks (likely to trigger UI changes like opening modals, dropdowns, etc.)
-                            // Shorter delay after typing (usually doesn't change UI structure)
-                            const isUIChangingAction = cmd.action === 'click';
-                            const delay = isUIChangingAction ? 1500 : 500;
-                            await new Promise(r => setTimeout(r, delay));
-                        } catch (err: any) {
-                            throw new Error(`Failed to execute command on element. It might not be visible or available. Details: ${err.message}`);
+            for (let iteration = 0; iteration < maxIterations; iteration++) {
+                console.log(`[Iteration ${iteration + 1}/${maxIterations}] Starting...`);
+
+                // 1. Capture fresh snapshot (shows current state after any previous actions)
+                const snapshot = await captureSnapshot();
+                console.log(`[Iteration ${iteration + 1}] Snapshot captured`);
+
+                // Show diff from previous snapshot
+                if (previousSnapshot) {
+                    const diff = compareSnapshots(previousSnapshot, snapshot);
+                    console.log(`[Iteration ${iteration + 1}] 📊 SNAPSHOT DIFF: ${diff.summary}`);
+
+                    if (diff.addedLines.length > 0) {
+                        console.log(`[Iteration ${iteration + 1}] ➕ ADDED (${diff.addedLines.length} lines):`);
+                        // Show first 20 added lines
+                        diff.addedLines.slice(0, 20).forEach((line, idx) => {
+                            console.log(`   ${idx + 1}. ${line}`);
+                        });
+                        if (diff.addedLines.length > 20) {
+                            console.log(`   ... and ${diff.addedLines.length - 20} more lines`);
                         }
                     }
+
+                    if (diff.removedLines.length > 0) {
+                        console.log(`[Iteration ${iteration + 1}] ➖ REMOVED (${diff.removedLines.length} lines):`);
+                        // Show first 10 removed lines
+                        diff.removedLines.slice(0, 10).forEach((line, idx) => {
+                            console.log(`   ${idx + 1}. ${line}`);
+                        });
+                        if (diff.removedLines.length > 10) {
+                            console.log(`   ... and ${diff.removedLines.length - 10} more lines`);
+                        }
+                    }
+
+                    if (diff.addedLines.length === 0 && diff.removedLines.length === 0) {
+                        console.warn(`[Iteration ${iteration + 1}] ⚠️ WARNING: No changes detected in snapshot after action!`);
+                    }
+                } else {
+                    console.log(`[Iteration ${iteration + 1}] (First iteration - no previous snapshot to compare)`);
                 }
+
+                // 2. Ask LLM for next action based on current snapshot
+                const data = await callLLMAgent(snapshot, previousActions);
+                console.log(`[Iteration ${iteration + 1}] LLM response:`, {
+                    commands: data.commands?.length || 0,
+                    isComplete: data.isComplete
+                });
+
+                // 3. Check if we have commands to execute
+                if (!data.commands || !Array.isArray(data.commands) || data.commands.length === 0) {
+                    // No more actions needed, task is complete
+                    console.log(`[Iteration ${iteration + 1}] No commands to execute, stopping`);
+                    break;
+                }
+
+                // 4. Execute only the FIRST command (next iteration will get updated state)
+                const cmd = data.commands[0];
+                if (cmd.action && cmd.agent_id) {
+                    try {
+                        console.log(`[Iteration ${iteration + 1}] Executing: ${cmd.action} on agent_id="${cmd.agent_id}"`);
+                        await executeAgentCommand(cmd.action, cmd.agent_id, cmd.value);
+                        successCount++;
+
+                        // Track what action was taken for context
+                        const actionDescription = `${cmd.action} on ${cmd.agent_id}${cmd.value ? ` with value "${cmd.value}"` : ''}`;
+                        previousActions.push(actionDescription);
+                        console.log(`[Iteration ${iteration + 1}] Action completed: ${actionDescription}`);
+
+                        // Longer delay after clicks (likely to trigger UI changes like opening modals, dropdowns, etc.)
+                        // Shorter delay after typing (usually doesn't change UI structure)
+                        const isUIChangingAction = cmd.action === 'click';
+                        const delay = isUIChangingAction ? 2000 : 500; // Increased to 2000ms for dropdowns
+                        console.log(`[Iteration ${iteration + 1}] Waiting ${delay}ms for UI to settle...`);
+                        await new Promise(r => setTimeout(r, delay));
+                    } catch (err: any) {
+                        throw new Error(`Failed to execute command on element. It might not be visible or available. Details: ${err.message}`);
+                    }
+                } else {
+                    // No valid command, stop
+                    console.log(`[Iteration ${iteration + 1}] Invalid command, stopping`);
+                    break;
+                }
+
+                // If LLM indicated this was the final action, stop
+                if (data.isComplete) {
+                    console.log(`[Iteration ${iteration + 1}] Task marked complete by LLM, stopping`);
+                    break;
+                }
+
+                console.log(`[Iteration ${iteration + 1}] Continuing to next iteration...`);
+
+                // Store snapshot for next iteration's diff
+                previousSnapshot = snapshot;
             }
 
             setInstruction(''); // clear input on success!
             if (successCount > 0) {
-                setSuccessMessage(`✅ Successfully executed ${successCount} action${successCount > 1 ? 's' : ''}`);
+                const responseMsg = `✅ Successfully executed ${successCount} action${successCount > 1 ? 's' : ''}`;
+                setSuccessMessage(responseMsg);
                 setTimeout(() => setSuccessMessage(null), 4000);
+
+                // Add assistant response to conversation
+                onAddMessage({
+                    role: 'assistant',
+                    content: responseMsg,
+                    timestamp: new Date().toISOString()
+                });
             }
         } catch (err: any) {
-            setExecutionError(err.message || 'An error occurred');
+            const errorMsg = err.message || 'An error occurred';
+            setExecutionError(errorMsg);
+
+            // Add error to conversation
+            onAddMessage({
+                role: 'system',
+                content: `❌ Error: ${errorMsg}`,
+                timestamp: new Date().toISOString()
+            });
         } finally {
             setIsExecuting(false);
             clearAnnotations(document.body); // Fallback cleanup
@@ -137,24 +318,257 @@ const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }
     );
 });
 
+type ConversationMessage = {
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+};
+
+type SnapshotHistory = {
+    id: string;
+    snapshot: string;
+    timestamp: string;
+    url: string;
+    size: number;
+};
+
 export const AiBehaviorMonitor: React.FC = () => {
-    const { events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey } = useTracker();
+    const { events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey, threadId } = useTracker();
     const [isOpen, setIsOpen] = useState(false);
+    const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
+    const [isResumed, setIsResumed] = useState(false);
 
     // AI Visualization state
     const [isVisualizing, setIsVisualizing] = useState(false);
     const [visualizedHtml, setVisualizedHtml] = useState<string | null>(null);
     const [visualizationError, setVisualizationError] = useState<string | null>(null);
     const [showVisualizationModal, setShowVisualizationModal] = useState(false);
-    const [currentSnapshot, setCurrentSnapshot] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'result' | 'prompt'>('result');
 
+    // Snapshot History state - SINGLE SOURCE OF TRUTH
+    const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistory[]>([]);
+    const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null);
+    const [hasNewSnapshot, setHasNewSnapshot] = useState(false);
 
+    // Derived state: Get the actual snapshot content based on selected ID
+    const currentSnapshot = React.useMemo(() => {
+        if (!selectedSnapshotId || snapshotHistory.length === 0) return null;
+        const found = snapshotHistory.find(s => s.id === selectedSnapshotId);
+        return found ? found.snapshot : null;
+    }, [selectedSnapshotId, snapshotHistory]);
+
+    // Auto-select newest snapshot when modal opens if nothing is selected
+    useEffect(() => {
+        if (showVisualizationModal && !selectedSnapshotId && snapshotHistory.length > 0) {
+            const newest = snapshotHistory[snapshotHistory.length - 1];
+            console.log('[PageSense] Auto-selecting newest snapshot on modal open:', newest.id);
+            setSelectedSnapshotId(newest.id);
+        }
+    }, [showVisualizationModal, selectedSnapshotId, snapshotHistory]);
+
+    // Ensure selected snapshot still exists in history (in case it was dropped from FIFO queue)
+    useEffect(() => {
+        if (selectedSnapshotId && snapshotHistory.length > 0) {
+            const exists = snapshotHistory.some(s => s.id === selectedSnapshotId);
+            if (!exists) {
+                // Selected snapshot was removed, auto-select newest
+                const newest = snapshotHistory[snapshotHistory.length - 1];
+                console.log('[PageSense] Selected snapshot no longer exists, auto-selecting newest:', newest.id);
+                setSelectedSnapshotId(newest.id);
+            }
+        }
+    }, [selectedSnapshotId, snapshotHistory]);
 
     // Draggable Modal State
     const [position, setPosition] = useState({ x: 50, y: 50 }); // Default top 50px, left 50px
     const isDraggingRef = useRef(false);
     const dragOffsetRef = useRef({ x: 0, y: 0 });
+
+    // Refs for auto-capture logic
+    const captureTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const lastDomSizeRef = useRef<number>(0);
+    const mutationObserverRef = useRef<MutationObserver | null>(null);
+
+    // Function to auto-capture snapshot when significant DOM changes detected
+    const captureSnapshotToHistory = useCallback(async () => {
+        // Skip capture if user is currently focused on a library input/textarea
+        // to avoid disrupting their typing experience
+        const activeElement = document.activeElement;
+        if (activeElement && activeElement.closest('#ai-page-sense-monitor-root')) {
+            console.log('[PageSense] Skipping auto-capture while user is typing in library UI');
+            return;
+        }
+
+        let removedElements: Map<string, Element> | null = null;
+
+        try {
+            // Wait for any animations/transitions to complete
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // 1. Remove library UI FIRST (before annotation)
+            removedElements = removeLibraryElements();
+
+            // 2. THEN annotate only the page elements (library UI is already gone)
+            annotateInteractiveElements(document.body);
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            // 3. Capture the CLEAN DOM (without library UI)
+            const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
+
+            // 4. Restore library UI elements immediately
+            if (removedElements) {
+                restoreLibraryElements(removedElements);
+            }
+
+            // 5. Clean up annotations
+            clearVisualAnnotations(document.body);
+
+            if (!snapshot) return;
+
+            const newSnapshotId = `snapshot_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const newSnapshot: SnapshotHistory = {
+                id: newSnapshotId,
+                snapshot,
+                timestamp: new Date().toISOString(),
+                url: window.location.href,
+                size: snapshot.length
+            };
+
+            setSnapshotHistory(prev => {
+                // Keep only last 5 snapshots (FIFO queue)
+                const updated = [...prev, newSnapshot].slice(-5);
+                return updated;
+            });
+
+            // Only auto-select the new snapshot if modal is not open
+            // (to avoid disrupting user while they're reviewing a different snapshot)
+            if (!showVisualizationModal) {
+                setSelectedSnapshotId(newSnapshotId);
+            } else {
+                // Just show the indicator that a new snapshot is available
+                setHasNewSnapshot(true);
+            }
+
+            console.log('[PageSense] Auto-captured snapshot:', {
+                id: newSnapshotId,
+                size: snapshot.length,
+                url: window.location.href,
+                time: new Date().toISOString()
+            });
+
+            // Clear "new" indicator after 3 seconds
+            setTimeout(() => setHasNewSnapshot(false), 3000);
+
+        } catch (err) {
+            console.warn('[PageSense] Failed to auto-capture snapshot:', err);
+        }
+    }, []);
+
+    // MutationObserver to detect significant DOM changes
+    useEffect(() => {
+        // Initialize last DOM size
+        lastDomSizeRef.current = document.body.innerHTML.length;
+
+        // Create MutationObserver
+        const observer = new MutationObserver(() => {
+            // Clear existing timeout
+            if (captureTimeoutRef.current) {
+                clearTimeout(captureTimeoutRef.current);
+            }
+
+            // Debounce: only capture 2 seconds after changes stop
+            captureTimeoutRef.current = setTimeout(() => {
+                const currentSize = document.body.innerHTML.length;
+                const previousSize = lastDomSizeRef.current;
+
+                // Calculate change percentage
+                const changePercent = Math.abs(currentSize - previousSize) / previousSize * 100;
+
+                // Only capture if change is significant (> 5% of DOM)
+                if (changePercent > 5) {
+                    console.log('[PageSense] Significant DOM change detected:', {
+                        changePercent: changePercent.toFixed(2) + '%',
+                        previousSize,
+                        currentSize
+                    });
+
+                    lastDomSizeRef.current = currentSize;
+                    captureSnapshotToHistory();
+                }
+            }, 2000); // 2 second debounce
+        });
+
+        // Start observing
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: false, // Don't track attribute changes (too noisy)
+            characterData: false // Don't track text changes (too noisy)
+        });
+
+        mutationObserverRef.current = observer;
+
+        // Capture initial snapshot on mount
+        setTimeout(() => {
+            captureSnapshotToHistory();
+        }, 1000);
+
+        // Cleanup
+        return () => {
+            if (mutationObserverRef.current) {
+                mutationObserverRef.current.disconnect();
+            }
+            if (captureTimeoutRef.current) {
+                clearTimeout(captureTimeoutRef.current);
+            }
+        };
+    }, [captureSnapshotToHistory]);
+
+    // Restore conversation history and monitor state from sessionStorage on mount
+    useEffect(() => {
+        if (threadId) {
+            const storageKey = `page-sense-conversation-${threadId}`;
+            const monitorStateKey = 'page-sense-monitor-open';
+
+            try {
+                // Restore conversation
+                const savedConversation = sessionStorage.getItem(storageKey);
+                if (savedConversation) {
+                    const parsed = JSON.parse(savedConversation);
+                    setConversationHistory(parsed);
+                    setIsResumed(true);
+                    console.log('[PageSense] Restored conversation:', parsed.length, 'messages');
+                }
+
+                // Restore monitor open state
+                const savedOpenState = sessionStorage.getItem(monitorStateKey);
+                if (savedOpenState === 'true') {
+                    setIsOpen(true);
+                }
+            } catch (err) {
+                console.warn('[PageSense] Failed to restore state:', err);
+            }
+        }
+    }, [threadId]);
+
+    // Save conversation history to sessionStorage whenever it changes
+    useEffect(() => {
+        if (threadId && conversationHistory.length > 0) {
+            const storageKey = `page-sense-conversation-${threadId}`;
+            try {
+                sessionStorage.setItem(storageKey, JSON.stringify(conversationHistory));
+                console.log('[PageSense] Saved conversation:', conversationHistory.length, 'messages');
+            } catch (err) {
+                console.warn('[PageSense] Failed to save conversation:', err);
+            }
+        }
+    }, [conversationHistory, threadId]);
+
+    // Save monitor open state
+    useEffect(() => {
+        const monitorStateKey = 'page-sense-monitor-open';
+        sessionStorage.setItem(monitorStateKey, String(isOpen));
+    }, [isOpen]);
 
     useEffect(() => {
         // Center modal initially only once when it opens
@@ -199,31 +613,111 @@ export const AiBehaviorMonitor: React.FC = () => {
         };
     };
 
-    const handleVisualize = async () => {
-        // Always capture a FRESH snapshot of current page state
-        // This ensures we capture dynamically loaded content
+    // Step 1: Open the visualizer modal and show prompt (NO generation yet)
+    const handleOpenVisualizer = async () => {
+        // Show modal immediately
+        setShowVisualizationModal(true);
+        setActiveTab('prompt');
+        setIsVisualizing(false);
+        setVisualizationError(null);
+
+        // Check if we have a recent auto-captured snapshot (within last 5 seconds)
+        const latestSnapshot = snapshotHistory[snapshotHistory.length - 1];
+        const now = Date.now();
+
+        if (latestSnapshot) {
+            const snapshotAge = now - new Date(latestSnapshot.timestamp).getTime();
+
+            // If snapshot is fresh (< 5 seconds old), use it immediately
+            if (snapshotAge < 5000) {
+                console.log('[PageSense] Using recent auto-captured snapshot:', latestSnapshot.id);
+                setSelectedSnapshotId(latestSnapshot.id);
+                setHasNewSnapshot(false);
+                return;
+            }
+        }
+
+        // Otherwise, capture a fresh snapshot
+        await new Promise(resolve => setTimeout(resolve, 800));
+
         let snapshot = null;
+        let removedElements: Map<string, Element> | null = null;
+
         try {
+            // 1. Remove library UI FIRST (before annotation)
+            removedElements = removeLibraryElements();
+
+            // 2. THEN annotate only the page elements (library UI is already gone)
+            try {
+                annotateInteractiveElements(document.body);
+            } catch (err) {
+                console.warn('Failed to annotate elements:', err);
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // 3. Capture CLEAN snapshot (without library UI)
             snapshot = convertHtmlToMarkdown(document.body.outerHTML);
+            console.log('[PageSense] Captured on-demand snapshot:', snapshot?.length);
         } catch (err) {
-            console.error("Failed to capture snapshot for visualization:", err);
+            console.error("Failed to capture snapshot:", err);
             setVisualizationError("Failed to capture page snapshot. Please try again.");
-            setShowVisualizationModal(true);
             return;
+        } finally {
+            // Restore library UI
+            if (removedElements) {
+                restoreLibraryElements(removedElements);
+            }
+            clearVisualAnnotations(document.body);
         }
 
         if (!snapshot) {
             setVisualizationError("Failed to capture page snapshot. Please try again.");
-            setShowVisualizationModal(true);
             return;
         }
 
-        setCurrentSnapshot(snapshot);
+        // Add the fresh snapshot to history and select it
+        const newSnapshotId = `snapshot_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newSnapshot: SnapshotHistory = {
+            id: newSnapshotId,
+            snapshot,
+            timestamp: new Date().toISOString(),
+            url: window.location.href,
+            size: snapshot.length
+        };
+
+        setSnapshotHistory(prev => {
+            // Keep only last 5 snapshots (FIFO queue)
+            const updated = [...prev, newSnapshot].slice(-5);
+            return updated;
+        });
+
+        setSelectedSnapshotId(newSnapshotId);
+        console.log('[PageSense] Fresh snapshot ready for visualization:', {
+            id: newSnapshotId,
+            size: snapshot.length,
+            url: window.location.href
+        });
+    };
+
+    // Step 2: Generate the visualization (called from button in modal)
+    const handleGenerate = async () => {
+        if (!currentSnapshot) {
+            setVisualizationError("No snapshot available. Please try again.");
+            return;
+        }
+
+        console.log('[PageSense] Generating visualization with snapshot:', {
+            snapshotId: selectedSnapshotId,
+            snapshotSize: currentSnapshot.length,
+            snapshotPreview: currentSnapshot.substring(0, 200) + '...',
+            totalSnapshots: snapshotHistory.length
+        });
+
         setIsVisualizing(true);
         setVisualizationError(null);
-        setShowVisualizationModal(true);
         setVisualizedHtml(null);
-        setActiveTab('result'); // Default to result tab
+        setActiveTab('result'); // Switch to result tab while generating
 
         try {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -234,7 +728,7 @@ export const AiBehaviorMonitor: React.FC = () => {
             const res = await fetch(`${apiUrl.replace(/\/$/, '')}/visualize`, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ snapshot })
+                body: JSON.stringify({ snapshot: currentSnapshot })
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data || 'Failed to generate');
@@ -308,14 +802,28 @@ export const AiBehaviorMonitor: React.FC = () => {
                 backgroundColor: '#f9f9f9'
             }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#111' }}>🧠 AI Behavior Intake</h3>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#111' }}>🧠 AI Behavior Intake</h3>
+                        {isResumed && conversationHistory.length > 0 && (
+                            <span style={{
+                                fontSize: '9px',
+                                padding: '2px 6px',
+                                backgroundColor: '#dbeafe',
+                                color: '#1e40af',
+                                borderRadius: '4px',
+                                fontWeight: '600'
+                            }} title={`Resumed with ${conversationHistory.length} messages`}>
+                                🔗 Resumed
+                            </span>
+                        )}
+                    </div>
                     <span style={{
                         fontSize: '9px',
                         color: '#10b981',
                         fontWeight: '600',
                         fontFamily: 'monospace',
                         letterSpacing: '0.5px'
-                    }} title={`Built: ${BUILD_TIME}`}>
+                    }} title={`Built: ${BUILD_TIME} | Thread: ${threadId.substring(0, 12)}...`}>
                         v{VERSION}
                     </span>
                 </div>
@@ -337,45 +845,93 @@ export const AiBehaviorMonitor: React.FC = () => {
             </div>
 
             {/* Agent Instruction UI extracted to prevent focus loss on parent re-render */}
-            <AgentInstructionForm executeAgentCommand={executeAgentCommand} apiUrl={apiUrl} apiKey={apiKey} />
+            <AgentInstructionForm
+                executeAgentCommand={executeAgentCommand}
+                apiUrl={apiUrl}
+                apiKey={apiKey}
+                threadId={threadId}
+                onAddMessage={(msg) => setConversationHistory(prev => [...prev, msg])}
+            />
+
+            {/* Conversation History */}
+            {conversationHistory.length > 0 && (
+                <div style={{
+                    padding: '8px 12px',
+                    backgroundColor: '#f9fafb',
+                    borderBottom: '1px solid #eaeaea',
+                    maxHeight: '120px',
+                    overflowY: 'auto'
+                }}>
+                    <div style={{ fontSize: '10px', color: '#666', marginBottom: '4px', fontWeight: '600' }}>
+                        Conversation ({conversationHistory.length})
+                    </div>
+                    {conversationHistory.slice(-3).map((msg, idx) => (
+                        <div key={idx} style={{
+                            fontSize: '9px',
+                            padding: '4px 6px',
+                            marginBottom: '4px',
+                            borderRadius: '4px',
+                            backgroundColor: msg.role === 'user' ? '#dbeafe' : msg.role === 'assistant' ? '#d1fae5' : '#fee2e2',
+                            color: '#111'
+                        }}>
+                            <strong>{msg.role === 'user' ? '👤' : msg.role === 'assistant' ? '🤖' : '⚠️'}</strong> {msg.content}
+                        </div>
+                    ))}
+                </div>
+            )}
 
             <div style={{ padding: '12px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                     <button
-                        onClick={handleVisualize}
-                        disabled={isVisualizing}
+                        onClick={handleOpenVisualizer}
                         style={{
                             fontSize: '12px',
                             padding: '6px 12px',
-                            backgroundColor: isVisualizing ? '#ccc' : '#0070f3',
+                            backgroundColor: hasNewSnapshot ? '#10b981' : '#0070f3',
                             color: 'white',
                             border: 'none',
                             borderRadius: '4px',
-                            cursor: isVisualizing ? 'not-allowed' : 'pointer',
+                            cursor: 'pointer',
                             fontWeight: 'bold',
-                            width: '100%'
+                            width: '100%',
+                            position: 'relative'
                         }}
                     >
-                        {isVisualizing ? '✨ Drawing...' : '✨ Draw AI Visualization'}
+                        {hasNewSnapshot && (
+                            <span style={{
+                                position: 'absolute',
+                                top: '-4px',
+                                right: '-4px',
+                                width: '10px',
+                                height: '10px',
+                                backgroundColor: '#10b981',
+                                borderRadius: '50%',
+                                border: '2px solid white',
+                                animation: 'pulse 2s infinite'
+                            }} />
+                        )}
+                        ✨ Draw AI Visualization {hasNewSnapshot ? '🟢' : ''}
                     </button>
                 </div>
 
                 {showVisualizationModal && (
-                    <div style={{
-                        position: 'fixed',
-                        top: position.y + 'px',
-                        left: position.x + 'px',
-                        width: '90%',
-                        maxWidth: '1200px',
-                        height: '90%',
-                        backgroundColor: '#fff',
-                        borderRadius: '12px',
-                        boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
-                        zIndex: 10000,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        overflow: 'hidden'
-                    }}>
+                    <div
+                        data-page-sense-modal="true"
+                        style={{
+                            position: 'fixed',
+                            top: position.y + 'px',
+                            left: position.x + 'px',
+                            width: '90%',
+                            maxWidth: '1200px',
+                            height: '90%',
+                            backgroundColor: '#fff',
+                            borderRadius: '12px',
+                            boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+                            zIndex: 10000,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden'
+                        }}>
                         <div
                             onMouseDown={handleMouseDown}
                             style={{
@@ -446,10 +1002,126 @@ export const AiBehaviorMonitor: React.FC = () => {
                                     )}
                                 </div>
                             ) : (
-                                <div style={{ flex: 1, padding: '20px', overflowY: 'auto' }}>
-                                    <div style={{ backgroundColor: '#2d2d2d', color: '#f8f8f2', padding: '16px', borderRadius: '8px', fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap', minHeight: '100%' }}>
-                                        {currentSnapshot ? currentSnapshot : "No snapshot feed generated."}
+                                <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                    {/* Snapshot History Selector */}
+                                    {snapshotHistory.length > 0 && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                            <label style={{ fontSize: '12px', fontWeight: '600', color: '#333', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                📸 Snapshot History ({snapshotHistory.length})
+                                                {hasNewSnapshot && (
+                                                    <span style={{
+                                                        fontSize: '10px',
+                                                        padding: '2px 6px',
+                                                        backgroundColor: '#10b981',
+                                                        color: 'white',
+                                                        borderRadius: '4px',
+                                                        fontWeight: '600'
+                                                    }}>
+                                                        🟢 Fresh
+                                                    </span>
+                                                )}
+                                            </label>
+                                            <select
+                                                value={selectedSnapshotId || ''}
+                                                onChange={(e) => {
+                                                    const snapshotId = e.target.value;
+                                                    setSelectedSnapshotId(snapshotId);
+                                                    setHasNewSnapshot(false);
+
+                                                    const snapshot = snapshotHistory.find(s => s.id === snapshotId);
+                                                    if (snapshot) {
+                                                        console.log('[PageSense] Selected snapshot:', {
+                                                            id: snapshot.id,
+                                                            size: snapshot.size,
+                                                            timestamp: snapshot.timestamp,
+                                                            url: snapshot.url
+                                                        });
+                                                    }
+                                                }}
+                                                style={{
+                                                    padding: '8px 12px',
+                                                    borderRadius: '6px',
+                                                    border: '1px solid #ccc',
+                                                    fontSize: '12px',
+                                                    backgroundColor: 'white',
+                                                    cursor: 'pointer'
+                                                }}
+                                            >
+                                                {[...snapshotHistory].reverse().map((snapshot, displayIndex) => {
+                                                    const time = new Date(snapshot.timestamp).toLocaleTimeString();
+                                                    const size = (snapshot.size / 1024).toFixed(1);
+                                                    const isNewest = displayIndex === 0;
+                                                    return (
+                                                        <option key={snapshot.id} value={snapshot.id}>
+                                                            {isNewest ? '🟢 ' : ''}
+                                                            {time} - {size}KB - {snapshot.url.split('/').pop() || 'page'}
+                                                        </option>
+                                                    );
+                                                })}
+                                            </select>
+                                        </div>
+                                    )}
+
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: '1 1 auto' }}>
+                                        <label style={{ fontSize: '12px', fontWeight: '600', color: '#333' }}>
+                                            📝 Snapshot Preview (Read-only)
+                                        </label>
+                                        <div style={{
+                                            backgroundColor: '#2d2d2d',
+                                            color: '#f8f8f2',
+                                            padding: '16px',
+                                            borderRadius: '8px',
+                                            fontFamily: 'monospace',
+                                            fontSize: '11px',
+                                            whiteSpace: 'pre-wrap',
+                                            height: '400px',
+                                            overflow: 'auto',
+                                            border: '1px solid #444',
+                                            flexShrink: 0,
+                                            wordBreak: 'break-word'
+                                        }}>
+                                            {currentSnapshot || (
+                                                snapshotHistory.length === 0
+                                                    ? "No snapshots available. The page will auto-capture snapshots as you interact with it."
+                                                    : `Waiting for snapshot selection... (${snapshotHistory.length} available)\nSelected ID: ${selectedSnapshotId || 'none'}`
+                                            )}
+                                        </div>
                                     </div>
+
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                        <label style={{ fontSize: '12px', fontWeight: '600', color: '#333' }}>
+                                            💡 Instructions
+                                        </label>
+                                        <div style={{
+                                            fontSize: '11px',
+                                            padding: '12px',
+                                            backgroundColor: '#f0f9ff',
+                                            border: '1px solid #bae6fd',
+                                            borderRadius: '8px',
+                                            color: '#0c4a6e'
+                                        }}>
+                                            The AI will analyze this page snapshot and create a visual representation.
+                                            It will highlight interactive elements with their agent IDs.
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={handleGenerate}
+                                        disabled={isVisualizing || !currentSnapshot}
+                                        style={{
+                                            fontSize: '14px',
+                                            padding: '12px 24px',
+                                            backgroundColor: isVisualizing ? '#ccc' : '#10b981',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '8px',
+                                            cursor: isVisualizing || !currentSnapshot ? 'not-allowed' : 'pointer',
+                                            fontWeight: 'bold',
+                                            boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)'
+                                        }}
+                                    >
+                                        {isVisualizing ? '⏳ Generating...' : '🎨 Generate Image'}
+                                    </button>
                                 </div>
                             )}
                         </div>
