@@ -1101,20 +1101,21 @@ export const AiBehaviorMonitor: React.FC = () => {
                     padding: '8px 12px',
                     backgroundColor: '#f9fafb',
                     borderBottom: '1px solid #eaeaea',
-                    maxHeight: '120px',
+                    maxHeight: '200px',
                     overflowY: 'auto'
                 }}>
                     <div style={{ fontSize: '10px', color: '#666', marginBottom: '4px', fontWeight: '600' }}>
                         Conversation ({conversationHistory.length})
                     </div>
-                    {conversationHistory.slice(-3).map((msg, idx) => (
+                    {conversationHistory.slice(-5).map((msg, idx) => (
                         <div key={idx} style={{
                             fontSize: '9px',
                             padding: '4px 6px',
                             marginBottom: '4px',
                             borderRadius: '4px',
                             backgroundColor: msg.role === 'user' ? '#dbeafe' : msg.role === 'assistant' ? '#d1fae5' : '#fee2e2',
-                            color: '#111'
+                            color: '#111',
+                            whiteSpace: 'pre-wrap'
                         }}>
                             <strong>{msg.role === 'user' ? '👤' : msg.role === 'assistant' ? '🤖' : '⚠️'}</strong> {msg.content}
                         </div>
