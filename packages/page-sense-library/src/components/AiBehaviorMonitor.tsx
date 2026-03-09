@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTracker } from '../tracker/useTracker';
 import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
-import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations } from '../utils/annotator';
+import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations, temporarilyShowHiddenElements, temporarilyExpandDropdowns } from '../utils/annotator';
 import { removeLibraryElements, restoreLibraryElements } from '../utils/cleanCapture';
 import { VERSION, BUILD_TIME } from '../version';
 
@@ -227,24 +227,71 @@ const AgentInstructionForm = React.memo(({
                 // 2. Remove library UI FIRST (before annotation)
                 const removedElements = removeLibraryElements();
 
-                // 3. THEN annotate ALL interactive elements with fresh IDs
-                //    (library UI is already gone, so only page elements are annotated)
+                // 3. Temporarily expand dropdowns to render their content into DOM
+                //    This is critical for dropdowns that don't render options until opened
+                const collapseDropdowns = temporarilyExpandDropdowns();
+
+                // 4. Wait for dropdown content to render (some frameworks render async)
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                // 5. Temporarily show hidden elements (unchecked checkboxes within expanded dropdowns)
+                //    This ensures ALL interactive elements are visible for annotation and snapshot
+                const restoreHiddenElements = temporarilyShowHiddenElements();
+
+                // 6. Debug: Check what checkboxes are visible
+                const allCheckboxes = document.querySelectorAll('input[type="checkbox"]');
+                console.log(`[DEBUG] Found ${allCheckboxes.length} checkboxes in DOM`);
+                allCheckboxes.forEach((cb, idx) => {
+                    const label = cb.closest('label')?.textContent?.trim() || 'no label';
+                    const checked = (cb as HTMLInputElement).checked;
+                    const computed = window.getComputedStyle(cb);
+                    const visible = computed.display !== 'none' && computed.visibility !== 'hidden';
+                    console.log(`  [${idx}] ${checked ? '✓' : '☐'} ${label} - visible: ${visible}, display: ${computed.display}`);
+                });
+
+                // 7. THEN annotate ALL interactive elements with fresh IDs
+                //    (library UI is gone, dropdowns expanded, hidden elements visible)
                 const annotatedCount = annotateInteractiveElements(document.body);
                 console.log(`[Snapshot] Annotated ${annotatedCount} interactive elements (fresh IDs)`);
 
-                // 4. Capture CLEAN snapshot (without library UI)
+                // 8. Capture CLEAN snapshot (without library UI, with ALL elements visible)
                 const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
 
-                // Debug: Log snapshot details and search for common dropdown keywords
+                // 9. Debug: Check what's in the snapshot
                 console.log(`[Snapshot] Size: ${snapshot.length} chars`);
-                console.log(`[Snapshot] Contains "declaration"?`, snapshot.toLowerCase().includes('declaration'));
-                console.log(`[Snapshot] Contains "customs"?`, snapshot.toLowerCase().includes('customs'));
+                console.log(`[Snapshot] Contains "Preparing"?`, snapshot.includes('Preparing'));
+                console.log(`[Snapshot] Contains "Filed"?`, snapshot.includes('Filed'));
+                console.log(`[Snapshot] Contains "Under Hold"?`, snapshot.includes('Under Hold'));
+                console.log(`[Snapshot] Contains "Released"?`, snapshot.includes('Released'));
+                console.log(`[Snapshot] Contains "Select all"?`, snapshot.includes('Select all'));
 
-                // Show a portion of the snapshot to verify dropdown content
-                const snapshotLines = snapshot.split('\n').slice(0, 50);
-                console.log(`[Snapshot] First 50 lines:`, snapshotLines.join('\n'));
+                // Show portions mentioning checkboxes
+                const lines = snapshot.split('\n');
+                const checkboxLines = lines.filter(line =>
+                    line.includes('checkbox') ||
+                    line.includes('Preparing') ||
+                    line.includes('Filed') ||
+                    line.includes('Under Hold') ||
+                    line.includes('Released')
+                );
+                console.log(`[Snapshot] Checkbox-related lines (${checkboxLines.length}):`, checkboxLines.join('\n'));
 
-                // 5. Restore library UI immediately
+                // DEBUG: Show raw markdown around checkbox lines to see if [ID: X] is there
+                console.log('[DEBUG] Raw snapshot first 2000 chars:', snapshot.substring(0, 2000));
+
+                // Check specifically for ID markers
+                const hasIdMarkers = /\[ID:\s*\d+/.test(snapshot);
+                console.log('[DEBUG] Snapshot contains [ID: X] markers?', hasIdMarkers);
+                if (hasIdMarkers) {
+                    const idLines = lines.filter(line => /\[ID:\s*\d+/.test(line));
+                    console.log('[DEBUG] Lines with ID markers:', idLines.join('\n'));
+                }
+
+                // 10. Restore hidden elements and collapse dropdowns
+                restoreHiddenElements();
+                collapseDropdowns();
+
+                // 7. Restore library UI immediately
                 restoreLibraryElements(removedElements);
 
                 // 6. Clean up VISUAL annotation text nodes (but keep data-agent-id for execution)
@@ -681,14 +728,25 @@ export const AiBehaviorMonitor: React.FC = () => {
             // 1. Remove library UI FIRST (before annotation)
             removedElements = removeLibraryElements();
 
-            // 2. THEN annotate only the page elements (library UI is already gone)
+            // 2. Temporarily expand dropdowns
+            const collapseDropdowns = temporarilyExpandDropdowns();
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            // 3. Temporarily show hidden elements (dropdowns, unchecked checkboxes, etc.)
+            const restoreHiddenElements = temporarilyShowHiddenElements();
+
+            // 4. THEN annotate only the page elements (library UI is already gone, hidden elements visible)
             annotateInteractiveElements(document.body);
             await new Promise(resolve => setTimeout(resolve, 100));
 
-            // 3. Capture the CLEAN DOM (without library UI)
+            // 5. Capture the CLEAN DOM (without library UI, with ALL elements visible)
             const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
 
-            // 4. Restore library UI elements immediately
+            // 6. Restore hidden elements and collapse dropdowns
+            restoreHiddenElements();
+            collapseDropdowns();
+
+            // 7. Restore library UI elements immediately
             if (removedElements) {
                 restoreLibraryElements(removedElements);
             }
@@ -920,7 +978,14 @@ export const AiBehaviorMonitor: React.FC = () => {
             // 1. Remove library UI FIRST (before annotation)
             removedElements = removeLibraryElements();
 
-            // 2. THEN annotate only the page elements (library UI is already gone)
+            // 2. Temporarily expand dropdowns
+            const collapseDropdowns = temporarilyExpandDropdowns();
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            // 3. Temporarily show hidden elements (dropdowns, unchecked checkboxes, etc.)
+            const restoreHiddenElements = temporarilyShowHiddenElements();
+
+            // 4. THEN annotate only the page elements (library UI is already gone, hidden elements visible)
             try {
                 annotateInteractiveElements(document.body);
             } catch (err) {
@@ -929,9 +994,13 @@ export const AiBehaviorMonitor: React.FC = () => {
 
             await new Promise(resolve => setTimeout(resolve, 200));
 
-            // 3. Capture CLEAN snapshot (without library UI)
+            // 5. Capture CLEAN snapshot (without library UI, with ALL elements visible)
             snapshot = convertHtmlToMarkdown(document.body.outerHTML);
             console.log('[PageSense] Captured on-demand snapshot:', snapshot?.length);
+
+            // 6. Restore hidden elements and collapse dropdowns
+            restoreHiddenElements();
+            collapseDropdowns();
         } catch (err) {
             console.error("Failed to capture snapshot:", err);
             setVisualizationError("Failed to capture page snapshot. Please try again.");
