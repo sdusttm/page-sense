@@ -354,8 +354,39 @@ const AgentInstructionForm = React.memo(({
                     try {
                         console.log(`[Iteration ${iteration + 1}] Executing: ${cmd.action} on agent_id="${cmd.agent_id}"`);
 
+                        // Get human-readable element description
+                        const element = document.querySelector(`[data-agent-id="${cmd.agent_id}"]`);
+                        let elementDescription = `agent_id="${cmd.agent_id}"`;
+
+                        if (element) {
+                            // Try to get meaningful text from the element
+                            const textContent = element.textContent?.trim().slice(0, 50) || '';
+                            const ariaLabel = element.getAttribute('aria-label') || '';
+                            const placeholder = element.getAttribute('placeholder') || '';
+                            const title = element.getAttribute('title') || '';
+                            const tagName = element.tagName.toLowerCase();
+                            const elementType = element.getAttribute('type') || '';
+
+                            // Build a descriptive string
+                            if (textContent) {
+                                elementDescription = `"${textContent}"${textContent.length === 50 ? '...' : ''}`;
+                            } else if (ariaLabel) {
+                                elementDescription = `"${ariaLabel}" (aria-label)`;
+                            } else if (placeholder) {
+                                elementDescription = `${tagName} with placeholder "${placeholder}"`;
+                            } else if (title) {
+                                elementDescription = `"${title}" (title)`;
+                            } else if (tagName === 'input' || tagName === 'textarea') {
+                                elementDescription = `${tagName}${elementType ? ` type="${elementType}"` : ''}`;
+                            } else if (tagName === 'button') {
+                                elementDescription = 'button';
+                            } else {
+                                elementDescription = `${tagName} element`;
+                            }
+                        }
+
                         // Track what action was taken for context
-                        const actionDescription = `${cmd.action} on ${cmd.agent_id}${cmd.value ? ` with value "${cmd.value}"` : ''}`;
+                        const actionDescription = `${cmd.action} on ${elementDescription}${cmd.value ? ` with value "${cmd.value}"` : ''}`;
 
                         // Check if this action will cause page navigation
                         if (cmd.action === 'click' && isNavigationLink(cmd.agent_id)) {
