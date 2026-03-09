@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useTracker } from '../tracker/useTracker';
 import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
 import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations } from '../utils/annotator';
+import { VERSION, BUILD_TIME } from '../version';
 
 const AgentInstructionForm = React.memo(({ executeAgentCommand, apiUrl, apiKey }: { executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>, apiUrl: string, apiKey?: string }) => {
     const [instruction, setInstruction] = useState('');
@@ -306,7 +307,18 @@ export const AiBehaviorMonitor: React.FC = () => {
                 alignItems: 'center',
                 backgroundColor: '#f9f9f9'
             }}>
-                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#111' }}>🧠 AI Behavior Intake</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#111' }}>🧠 AI Behavior Intake</h3>
+                    <span style={{
+                        fontSize: '9px',
+                        color: '#10b981',
+                        fontWeight: '600',
+                        fontFamily: 'monospace',
+                        letterSpacing: '0.5px'
+                    }} title={`Built: ${BUILD_TIME}`}>
+                        v{VERSION}
+                    </span>
+                </div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <button
                         onClick={() => setIsPaused(!isPaused)}
