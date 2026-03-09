@@ -18,7 +18,7 @@ interface CrossPageExecutionState {
 
 // Cross-page execution helpers
 const CROSS_PAGE_STORAGE_KEY = 'page-sense-cross-page-execution';
-const CROSS_PAGE_TIMEOUT_MS = 15000; // 15 seconds max to resume
+const CROSS_PAGE_TIMEOUT_MS = 60000; // 60 seconds max to resume (increased for slow page loads)
 
 const saveCrossPageState = (state: CrossPageExecutionState) => {
     try {
@@ -145,49 +145,30 @@ const AgentInstructionForm = React.memo(({
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [executedActions, setExecutedActions] = useState<string[]>([]);
     const [showActionDetails, setShowActionDetails] = useState(false);
-    const hasResumedRef = useRef(false);
 
-    // Check for cross-page execution state on mount
+    // Listen for cross-page execution resume event from main component
     useEffect(() => {
-        const resumeExecution = async () => {
-            // Only resume once
-            if (hasResumedRef.current) return;
-            hasResumedRef.current = true;
+        const handleResumeEvent = async (event: Event) => {
+            const customEvent = event as CustomEvent;
+            console.log('[Cross-Page] AgentInstructionForm received resume event:', customEvent.detail);
 
-            const state = loadCrossPageState();
-            if (!state) return;
+            const { instruction, previousActions, iterationCount } = customEvent.detail;
 
-            // Verify threadId matches (avoid resuming wrong session)
-            if (state.threadId !== threadId) {
-                console.log('[Cross-Page] ThreadId mismatch, clearing state');
-                clearCrossPageState();
-                return;
-            }
-
-            console.log('[Cross-Page] Resuming execution after page navigation');
-            console.log('[Cross-Page] Previous URL:', state.url);
-            console.log('[Cross-Page] Current URL:', window.location.href);
-            console.log('[Cross-Page] Previous actions:', state.previousActions);
-
-            // Show resuming message
-            onAddMessage({
-                role: 'system',
-                content: `🔄 Resuming task after page navigation... (${state.previousActions.length} actions completed)`,
-                timestamp: new Date().toISOString()
-            });
-
-            // Wait for page to fully load and render
-            await new Promise(resolve => setTimeout(resolve, 2500));
+            console.log('[Cross-Page] 🚀 Starting execution with instruction:', instruction);
 
             // Resume execution
-            await handleExecuteInstruction(state.instruction, {
-                previousActions: state.previousActions,
-                iterationCount: state.iterationCount
+            await handleExecuteInstruction(instruction, {
+                previousActions,
+                iterationCount
             });
         };
 
-        resumeExecution();
-    }, [threadId]); // Only run when threadId is available
+        window.addEventListener('page-sense-resume-execution', handleResumeEvent);
+
+        return () => {
+            window.removeEventListener('page-sense-resume-execution', handleResumeEvent);
+        };
+    }, [executeAgentCommand, apiUrl, apiKey, threadId]); // Include dependencies for handleExecuteInstruction
 
     const handleExecuteInstruction = async (
         instructionOverride?: string,
@@ -657,6 +638,7 @@ export const AiBehaviorMonitor: React.FC = () => {
     const [isOpen, setIsOpen] = useState(false);
     const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
     const [isResumed, setIsResumed] = useState(false);
+    const hasCheckedCrossPageRef = useRef(false);
 
     // AI Visualization state
     const [isVisualizing, setIsVisualizing] = useState(false);
@@ -880,6 +862,73 @@ export const AiBehaviorMonitor: React.FC = () => {
                 console.warn('[PageSense] Failed to restore state:', err);
             }
         }
+    }, [threadId]);
+
+    // Check for cross-page execution state on mount - MUST run in main component, not child form
+    // This ensures execution resumes even if the monitor UI is closed
+    useEffect(() => {
+        console.log('[Cross-Page] Main component mount check, threadId:', threadId, 'hasChecked:', hasCheckedCrossPageRef.current);
+
+        // Only check once per page load
+        if (hasCheckedCrossPageRef.current || !threadId) {
+            console.log('[Cross-Page] Skipping check (already checked or no threadId)');
+            return;
+        }
+        hasCheckedCrossPageRef.current = true;
+
+        const state = loadCrossPageState();
+        if (!state) {
+            console.log('[Cross-Page] No state found in localStorage');
+            return;
+        }
+
+        console.log('[Cross-Page] Found state:', {
+            threadId: state.threadId,
+            instruction: state.instruction,
+            previousActions: state.previousActions.length,
+            iterationCount: state.iterationCount
+        });
+
+        // Verify threadId matches (avoid resuming wrong session)
+        if (state.threadId !== threadId) {
+            console.log('[Cross-Page] ThreadId mismatch:', { expected: threadId, actual: state.threadId });
+            clearCrossPageState();
+            return;
+        }
+
+        console.log('[Cross-Page] ✅ Resuming execution after page navigation');
+        console.log('[Cross-Page] Previous URL:', state.url);
+        console.log('[Cross-Page] Current URL:', window.location.href);
+        console.log('[Cross-Page] Previous actions:', state.previousActions);
+
+        // Open the monitor automatically so user can see resumption
+        setIsOpen(true);
+
+        // Add resuming message to conversation
+        setConversationHistory(prev => [...prev, {
+            role: 'system',
+            content: `🔄 Resuming task after page navigation... (${state.previousActions.length} actions completed)`,
+            timestamp: new Date().toISOString()
+        }]);
+
+        // Clear the cross-page state immediately to prevent double-execution
+        clearCrossPageState();
+
+        // Wait for page to fully load and render, then trigger form's execute
+        // We need to wait a bit longer to ensure AgentInstructionForm has mounted
+        setTimeout(() => {
+            console.log('[Cross-Page] 🚀 Triggering execution via custom event');
+
+            // Dispatch custom event that AgentInstructionForm will listen for
+            window.dispatchEvent(new CustomEvent('page-sense-resume-execution', {
+                detail: {
+                    instruction: state.instruction,
+                    previousActions: state.previousActions,
+                    iterationCount: state.iterationCount
+                }
+            }));
+        }, 3000); // 3 second delay for page load + form mount
+
     }, [threadId]);
 
     // Save conversation history to sessionStorage whenever it changes

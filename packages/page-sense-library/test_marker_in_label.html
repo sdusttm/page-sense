@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Test: Marker in Label Parent</h2>
+  
+  <!-- What v0.2.9 creates -->
+  <label>
+    <span style="font-size: 1px; color: transparent">[ID: 26 ☐]</span>
+    <input type="checkbox">
+    <span>Preparing</span>
+  </label>
+  
+  <br><br>
+  
+  <!-- Another one checked -->
+  <label>
+    <span style="font-size: 1px; color: transparent">[ID: 27 ✓]</span>
+    <input type="checkbox" checked>
+    <span>Filed</span>
+  </label>
+  
+  <br><br>
+  
+  <script type="module">
+    import { convertHtmlToMarkdown } from 'https://esm.sh/dom-to-semantic-markdown@1.5.0';
+
+    const markdown = convertHtmlToMarkdown(document.body.innerHTML);
+    
+    console.log("=== MARKDOWN OUTPUT ===");
+    console.log(markdown);
+    console.log("\n=== ANALYSIS ===");
+    console.log("Contains [ID: 26 ☐]?", markdown.includes("[ID: 26 ☐]"));
+    console.log("Contains [ID: 27 ✓]?", markdown.includes("[ID: 27 ✓]"));
+    console.log("Contains 'Preparing'?", markdown.includes("Preparing"));
+    console.log("Contains 'Filed'?", markdown.includes("Filed"));
+    
+    // Show each line that contains checkbox text
+    console.log("\n=== LINES WITH CHECKBOX TEXT ===");
+    const lines = markdown.split('\n');
+    lines.forEach((line, i) => {
+      if (line.includes('Preparing') || line.includes('Filed')) {
+        console.log(`Line ${i}: ${line}`);
+      }
+    });
+  </script>
+</body>
+</html>
