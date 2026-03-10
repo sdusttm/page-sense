@@ -211,48 +211,55 @@ export const TrackerProvider: React.FC<{
             inputElement.dispatchEvent(new Event('input', { bubbles: true }));
             inputElement.dispatchEvent(new Event('change', { bubbles: true }));
         } else if (action === 'select' && value !== undefined) {
-            const selectElement = element as HTMLSelectElement;
+            if (element.tagName.toLowerCase() === 'select') {
+                const selectElement = element as HTMLSelectElement;
 
-            // Try to find an option whose text or value exactly matches the LLM's requested value
-            let optionToSelect = Array.from(selectElement.options).find(opt =>
-                opt.text.trim() === value.trim() || opt.value === value.trim()
-            );
-
-            // Fallback to case-insensitive partial match if exact match fails
-            if (!optionToSelect) {
-                const lowerValue = value.toLowerCase().trim();
-                optionToSelect = Array.from(selectElement.options).find(opt =>
-                    opt.text.toLowerCase().includes(lowerValue) || opt.value.toLowerCase() === lowerValue
+                // Try to find an option whose text or value exactly matches the LLM's requested value
+                let optionToSelect = Array.from(selectElement.options).find(opt =>
+                    opt.text.trim() === value.trim() || opt.value === value.trim()
                 );
-            }
 
-            if (optionToSelect) {
-                // Set the option selected state directly (most reliable for vanilla DOM)
-                optionToSelect.selected = true;
-
-                // Also invoke the native select value setter to bypass React's wrapper
-                const nativeSelectValueSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLSelectElement.prototype,
-                    'value'
-                )?.set;
-
-                if (nativeSelectValueSetter) {
-                    nativeSelectValueSetter.call(selectElement, optionToSelect.value);
-                } else {
-                    selectElement.value = optionToSelect.value;
+                // Fallback to case-insensitive partial match if exact match fails
+                if (!optionToSelect) {
+                    const lowerValue = value.toLowerCase().trim();
+                    optionToSelect = Array.from(selectElement.options).find(opt =>
+                        opt.text.toLowerCase().includes(lowerValue) || opt.value.toLowerCase() === lowerValue
+                    );
                 }
 
-                console.log(`[PageSense] Selected option: "${optionToSelect.text}" (${optionToSelect.value})`);
+                if (optionToSelect) {
+                    // Set the option selected state directly (most reliable for vanilla DOM)
+                    optionToSelect.selected = true;
 
-                // Dispatch both input and change events to trigger React's synthetic event system
-                // We must artificially inject the new value into the Event object because React 16+ tracks it
-                const inputEvent = new Event('input', { bubbles: true });
-                const changeEvent = new Event('change', { bubbles: true });
+                    // Also invoke the native select value setter to bypass React's wrapper
+                    const nativeSelectValueSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLSelectElement.prototype,
+                        'value'
+                    )?.set;
 
-                selectElement.dispatchEvent(inputEvent);
-                selectElement.dispatchEvent(changeEvent);
+                    if (nativeSelectValueSetter) {
+                        nativeSelectValueSetter.call(selectElement, optionToSelect.value);
+                    } else {
+                        selectElement.value = optionToSelect.value;
+                    }
+
+                    console.log(`[PageSense] Selected option: "${optionToSelect.text}" (${optionToSelect.value})`);
+
+                    // Dispatch both input and change events to trigger React's synthetic event system
+                    // We must artificially inject the new value into the Event object because React 16+ tracks it
+                    const inputEvent = new Event('input', { bubbles: true });
+                    const changeEvent = new Event('change', { bubbles: true });
+
+                    selectElement.dispatchEvent(inputEvent);
+                    selectElement.dispatchEvent(changeEvent);
+                } else {
+                    console.warn(`[PageSense] Failed to find requested option "${value}" inside <select data-agent-id="${agentId}">`);
+                }
             } else {
-                console.warn(`[PageSense] Failed to find requested option "${value}" inside <select data-agent-id="${agentId}">`);
+                // If the LLM tries to "select" on a non-select element (like a custom dropdown button),
+                // just gracefully execute a click instead to toggle it.
+                console.log(`[PageSense] Element <${element.tagName.toLowerCase()}> is not a native select. Falling back to simple click for 'select' command.`);
+                (element as HTMLElement).click();
             }
         }
 
