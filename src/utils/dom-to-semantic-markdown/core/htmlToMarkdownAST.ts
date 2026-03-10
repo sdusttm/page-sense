@@ -269,9 +269,17 @@ export function htmlToMarkdownAST(element: Element, options?: ConversionOptions,
 
                 const optionValues = Array.from(selectElem.options).map(opt => opt.text.trim());
 
+                let selectedText = selectElem.value || '';
+                const activeOption = Array.from(selectElem.options).find(opt => opt.selected);
+                if (activeOption) {
+                    selectedText = activeOption.text.trim();
+                } else if (selectElem.selectedIndex >= 0 && selectElem.options[selectElem.selectedIndex]) {
+                    selectedText = selectElem.options[selectElem.selectedIndex].text.trim();
+                }
+
                 result.push({
                     type: 'select',
-                    value: selectElem.value || '',
+                    value: selectedText,
                     options: optionValues,
                     disabled: selectElem.disabled,
                     agentId: selectElem.getAttribute('data-agent-id') || undefined

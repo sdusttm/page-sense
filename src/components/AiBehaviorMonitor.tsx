@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTracker } from '../tracker/useTracker';
 import { convertHtmlToMarkdown } from '../utils/dom-to-semantic-markdown';
-import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations, temporarilyShowHiddenElements, temporarilyExpandDropdowns } from '../utils/annotator';
+import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations, temporarilyShowHiddenElements, temporarilyExpandDropdowns, syncStateToAttributes } from '../utils/annotator';
 import { removeLibraryElements, restoreLibraryElements } from '../utils/cleanCapture';
 import { VERSION, BUILD_TIME } from '../version';
 
@@ -14,6 +14,7 @@ interface CrossPageExecutionState {
     threadId: string;
     timestamp: number;
     url: string;
+    previousSnapshot?: string;
 }
 
 // Cross-page execution helpers
@@ -135,7 +136,8 @@ const AgentInstructionForm = React.memo(({
             // Resume execution
             await handleExecuteInstruction(instruction, {
                 previousActions,
-                iterationCount
+                iterationCount,
+                previousSnapshot: customEvent.detail.previousSnapshot
             });
         };
 
@@ -153,6 +155,7 @@ const AgentInstructionForm = React.memo(({
         resumeState?: {
             previousActions: string[];
             iterationCount: number;
+            previousSnapshot?: string;
         }
     ) => {
         const currentInstruction = instructionOverride || instruction;
@@ -213,7 +216,11 @@ const AgentInstructionForm = React.memo(({
                 const annotatedCount = annotateInteractiveElements(document.body);
                 console.log(`[Snapshot] Annotated ${annotatedCount} interactive elements (fresh IDs)`);
 
-                // 8. Capture CLEAN snapshot (without library UI, with ALL elements visible)
+                // 8. Sync DOM property state (React programmatic mutators) to HTML attributes 
+                //    so that outerHTML successfully captures the state
+                syncStateToAttributes();
+
+                // 9. Capture CLEAN snapshot (without library UI, with ALL elements visible)
                 const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
 
                 // 9. Debug: Check what's in the snapshot
@@ -283,7 +290,9 @@ const AgentInstructionForm = React.memo(({
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'Failed to execute instruction');
 
-                console.log(`[LLM Response]`, {
+                const backendVersion = res.headers.get('x-agent-backend-version') || 'unknown';
+
+                console.log(`[LLM Response] (Backend API v${backendVersion})`, {
                     commands: data.commands?.length || 0,
                     isComplete: data.isComplete,
                     firstCommand: data.commands?.[0]
@@ -296,14 +305,16 @@ const AgentInstructionForm = React.memo(({
             let successCount = resumeState ? resumeState.previousActions.length : 0;
             const maxIterations = 10; // Prevent infinite loops
             const previousActions: string[] = resumeState ? [...resumeState.previousActions] : [];
-            let previousSnapshot: string | null = null;
+            let previousSnapshot: string | null = resumeState?.previousSnapshot || null;
+            let lastCommand: any = null;
+            let fallbackAttempted = false;
             const startIteration = resumeState ? resumeState.iterationCount : 0;
 
             for (let iteration = startIteration; iteration < maxIterations; iteration++) {
                 console.log(`[Iteration ${iteration + 1}/${maxIterations}] Starting...`);
 
                 // 1. Capture fresh snapshot (shows current state after any previous actions)
-                const snapshot = await captureSnapshot();
+                let snapshot = await captureSnapshot();
                 console.log(`[Iteration ${iteration + 1}] Snapshot captured`);
 
                 // Show diff from previous snapshot
@@ -335,6 +346,98 @@ const AgentInstructionForm = React.memo(({
 
                     if (diff.addedLines.length === 0 && diff.removedLines.length === 0) {
                         console.warn(`[Iteration ${iteration + 1}] ⚠️ WARNING: No changes detected in snapshot after action!`);
+
+                        let fallbackSuccessful = false;
+
+                        // 🧠 ATTEMPT SMART FALLBACK
+                        if (lastCommand && !fallbackAttempted) {
+                            console.log(`[PageSense] 🧠 Smart Engine: Attempting automatic fallback for failed action: ${lastCommand.action}`);
+
+                            const element = document.querySelector(`[data-agent-id="${lastCommand.agent_id}"]`);
+
+                            // Smart Fallback 1: LLM hallucinated 'click' or 'type' on a <select>
+                            if (element && (lastCommand.action === 'click' || lastCommand.action === 'type') && element.tagName.toLowerCase() === 'select') {
+                                const selectEl = element as HTMLSelectElement;
+                                const instructionLower = currentInstruction.toLowerCase();
+                                const instructionWords = instructionLower.split(' ').filter(w => w.length > 2); // filter tiny words
+
+                                // Try to infer which option the user meant
+                                const matchingOption = Array.from(selectEl.options).find(opt => {
+                                    const optTextLower = opt.text.toLowerCase();
+                                    const optValLower = opt.value.toLowerCase();
+
+                                    // 1. Exact substring match of option text/value inside the instruction
+                                    if (instructionLower.includes(optTextLower) || instructionLower.includes(optValLower)) return true;
+
+                                    // 2. Exact match of instruction inside option text/value 
+                                    if (optTextLower.includes(instructionLower) || optValLower.includes(instructionLower)) return true;
+
+                                    // 3. If LLM typed a specific value, try to match that
+                                    if (lastCommand.action === 'type' && lastCommand.value) {
+                                        const typeValueLower = lastCommand.value.toLowerCase();
+                                        if (optTextLower.includes(typeValueLower) || optValLower.includes(typeValueLower) || typeValueLower.includes(optTextLower)) {
+                                            return true;
+                                        }
+                                    }
+
+                                    // 4. Granular word-based substring match (e.g., "chinese" matches "中文 (Chinese)")
+                                    return instructionWords.some(word => optTextLower.includes(word) || optValLower.includes(word));
+                                });
+
+                                if (matchingOption) {
+                                    console.log(`[PageSense] 🧠 Smart Engine: Guessed option "${matchingOption.text}" based on instruction and context. Upgrading action to 'select'.`);
+
+                                    try {
+                                        await executeAgentCommand('select', lastCommand.agent_id, matchingOption.value);
+                                        console.log(`[PageSense] 🧠 Smart Engine: Fallback executed. Waiting 2000ms for UI to settle...`);
+                                        await new Promise(r => setTimeout(r, 2000));
+
+                                        // Capture a new snapshot to check if the fallback worked
+                                        // We use the same capture method, but we must compare it to `previousSnapshot`,
+                                        // because `snapshot` in this scope is the snapshot that just failed to trigger a diff!
+                                        const fallbackSnapshot = await captureSnapshot();
+                                        const fallbackDiff = compareSnapshots(previousSnapshot || snapshot, fallbackSnapshot);
+
+                                        console.log(`[PageSense] 🔍 Fallback Diff Added Lines (${fallbackDiff.addedLines.length}):`, fallbackDiff.addedLines);
+                                        console.log(`[PageSense] 🔍 Fallback Diff Removed Lines (${fallbackDiff.removedLines.length}):`, fallbackDiff.removedLines);
+
+                                        if (fallbackDiff.addedLines.length > 0 || fallbackDiff.removedLines.length > 0) {
+                                            console.log(`[PageSense] 🧠 Smart Engine: Fallback SUCCESSFUL! UI changed.`);
+                                            // Replace the old unchanged snapshot with this new one so next iteration gets it
+                                            snapshot = fallbackSnapshot;
+                                            fallbackSuccessful = true;
+                                            fallbackAttempted = true;
+
+                                            // Enhance the last naive action description to show the engine saved the day
+                                            if (previousActions.length > 0) {
+                                                const popped = previousActions.pop();
+                                                previousActions.push(`${popped} -> 🌟 SMART FALLBACK: Auto-corrected and successfully selected "${matchingOption.text}"`);
+                                            }
+
+                                            onAddMessage({
+                                                role: 'system',
+                                                content: `🧠 Engine auto-corrected click to select: "${matchingOption.text}"`,
+                                                timestamp: new Date().toISOString()
+                                            });
+                                        } else {
+                                            console.log(`[PageSense] 🧠 Smart Engine: Fallback failed to produce UI changes.`);
+                                        }
+                                    } catch (err) {
+                                        console.error(`[PageSense] 🧠 Smart Engine: Error during fallback`, err);
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!fallbackSuccessful) {
+                            if (previousActions.length > 0) {
+                                const failedAction = previousActions[previousActions.length - 1];
+                                const cleanActionName = failedAction.split(" (❌")[0].split(" ->")[0];
+
+                                // 3. Push a single, commanding error message AFTER the failed action
+                                previousActions.push(`❌ ERROR: Your action ('${cleanActionName}') produced NO visual changes. If you just clicked a Save/Submit button, it might be a silent save. If your ultimate objective is already visibly fulfilled on the screen, please return isComplete: true. Otherwise, try a DIFFERENT action. DO NOT repeat the exact same action!`);
+                            }
+                        }
                     }
                 } else {
                     console.log(`[Iteration ${iteration + 1}] (First iteration - no previous snapshot to compare)`);
@@ -356,6 +459,21 @@ const AgentInstructionForm = React.memo(({
 
                 // 4. Execute only the FIRST command (next iteration will get updated state)
                 const cmd = data.commands[0];
+
+                // 🛑 Hard Loop Breaker: Prevent LLM from consecutively retrying the exact same failed action
+                if (lastCommand &&
+                    lastCommand.action === cmd.action &&
+                    lastCommand.agent_id === cmd.agent_id &&
+                    lastCommand.value === cmd.value) {
+
+                    // Check if the last action we recorded was our custom ❌ ERROR message for zero-diff
+                    if (previousActions.length > 0 && previousActions[previousActions.length - 1].startsWith('❌ ERROR:')) {
+                        console.error(`[Iteration ${iteration + 1}] 🛑 LOOP BREAKER TRIGGERED: LLM forcefully repeated a failed command. Aborting execution.`);
+                        setExecutionError("Execution aborted: The AI agent got stuck in a repetitive loop attempting an action that produces no visual feedback.");
+                        break;
+                    }
+                }
+
                 if (cmd.action) {
                     try {
                         if (cmd.action === 'ask_confirmation') {
@@ -431,7 +549,8 @@ const AgentInstructionForm = React.memo(({
                                 iterationCount: iteration + 1,
                                 threadId,
                                 timestamp: Date.now(),
-                                url: window.location.href // NOTE: URL *before* click
+                                url: window.location.href, // NOTE: URL *before* click
+                                previousSnapshot: snapshot // Store pre-action snapshot
                             };
                             saveCrossPageState(crossPageState);
                         }
@@ -471,7 +590,9 @@ const AgentInstructionForm = React.memo(({
 
                 console.log(`[Iteration ${iteration + 1}] Continuing to next iteration...`);
 
-                // Store snapshot for next iteration's diff
+                // Store snapshot and command for next iteration's diff & smart fallback logic
+                lastCommand = cmd;
+                fallbackAttempted = false;
                 previousSnapshot = snapshot;
             }
 
@@ -723,6 +844,9 @@ export const AiBehaviorMonitor: React.FC = () => {
             // 4. THEN annotate only the page elements (library UI is already gone, hidden elements visible)
             annotateInteractiveElements(document.body);
             await new Promise(resolve => setTimeout(resolve, 100));
+
+            // Sync DOM properties before outerHTML serialization
+            syncStateToAttributes();
 
             // 5. Capture the CLEAN DOM (without library UI, with ALL elements visible)
             const snapshot = convertHtmlToMarkdown(document.body.outerHTML);
@@ -983,7 +1107,8 @@ export const AiBehaviorMonitor: React.FC = () => {
                 detail: {
                     instruction: state.instruction,
                     previousActions: state.previousActions,
-                    iterationCount: state.iterationCount
+                    iterationCount: state.iterationCount,
+                    previousSnapshot: state.previousSnapshot
                 }
             }));
         }, 3000);
@@ -1101,6 +1226,9 @@ export const AiBehaviorMonitor: React.FC = () => {
             }
 
             await new Promise(resolve => setTimeout(resolve, 200));
+
+            // Sync DOM property state (React programmatic mutators) to HTML attributes 
+            syncStateToAttributes();
 
             // 5. Capture CLEAN snapshot (without library UI, with ALL elements visible)
             snapshot = convertHtmlToMarkdown(document.body.outerHTML);

@@ -91,6 +91,42 @@ export function clearVisualAnnotations(root: Element = document.body): void {
 }
 
 /**
+ * Syncs programmatic DOM properties (value, checked, selected) to HTML attributes 
+ * so that `outerHTML` properly serializes the latest state for the markdown parser.
+ */
+export function syncStateToAttributes(root: Element = document.body): void {
+    // Sync Selects
+    const selects = root.querySelectorAll('select');
+    selects.forEach(select => {
+        Array.from(select.options).forEach(option => {
+            if (option.selected) {
+                option.setAttribute('selected', 'selected');
+            } else {
+                option.removeAttribute('selected');
+            }
+        });
+    });
+
+    // Sync Checkboxes & Radios
+    const checks = root.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+    checks.forEach(check => {
+        const input = check as HTMLInputElement;
+        if (input.checked) {
+            input.setAttribute('checked', 'checked');
+        } else {
+            input.removeAttribute('checked');
+        }
+    });
+
+    // Sync Text Inputs & Textareas
+    const textInputs = root.querySelectorAll('input:not([type="checkbox"]):not([type="radio"]), textarea');
+    textInputs.forEach(input => {
+        const el = input as HTMLInputElement | HTMLTextAreaElement;
+        el.setAttribute('value', el.value);
+    });
+}
+
+/**
  * Temporarily expands all dropdowns and shows their content for snapshot capture.
  * This is more aggressive than just showing hidden elements - it actually triggers
  * dropdowns to open so their content gets rendered into the DOM.

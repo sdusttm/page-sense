@@ -1,6 +1,7 @@
 "use client";
 import React, { createContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { convertHtmlToMarkdown } from '../utils/dom-to-semantic-markdown';
+import { syncStateToAttributes } from '../utils/annotator';
 
 export type InteractionEvent = {
     id: string;
@@ -196,11 +197,13 @@ export const TrackerProvider: React.FC<{
                 'value'
             )?.set;
 
-            if (inputElement.tagName.toLowerCase() === 'textarea' && nativeTextAreaValueSetter) {
+            const tagName = inputElement.tagName.toLowerCase();
+            if (tagName === 'textarea' && nativeTextAreaValueSetter) {
                 nativeTextAreaValueSetter.call(inputElement, value);
-            } else if (nativeInputValueSetter) {
+            } else if (tagName === 'input' && nativeInputValueSetter) {
                 nativeInputValueSetter.call(inputElement, value);
             } else {
+                // If LLM hallucinates 'type' on a select or other tag
                 inputElement.value = value;
             }
 
@@ -224,9 +227,30 @@ export const TrackerProvider: React.FC<{
             }
 
             if (optionToSelect) {
-                selectElement.value = optionToSelect.value;
+                // Set the option selected state directly (most reliable for vanilla DOM)
+                optionToSelect.selected = true;
+
+                // Also invoke the native select value setter to bypass React's wrapper
+                const nativeSelectValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLSelectElement.prototype,
+                    'value'
+                )?.set;
+
+                if (nativeSelectValueSetter) {
+                    nativeSelectValueSetter.call(selectElement, optionToSelect.value);
+                } else {
+                    selectElement.value = optionToSelect.value;
+                }
+
                 console.log(`[PageSense] Selected option: "${optionToSelect.text}" (${optionToSelect.value})`);
-                selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+
+                // Dispatch both input and change events to trigger React's synthetic event system
+                // We must artificially inject the new value into the Event object because React 16+ tracks it
+                const inputEvent = new Event('input', { bubbles: true });
+                const changeEvent = new Event('change', { bubbles: true });
+
+                selectElement.dispatchEvent(inputEvent);
+                selectElement.dispatchEvent(changeEvent);
             } else {
                 console.warn(`[PageSense] Failed to find requested option "${value}" inside <select data-agent-id="${agentId}">`);
             }
@@ -257,6 +281,8 @@ export const TrackerProvider: React.FC<{
 
             let snapshot = undefined;
             try {
+                syncStateToAttributes();
+
                 // Capture a lightweight markdown snapshot of the body
                 // Note: This may include library UI, but that's OK for event tracking
                 // since these snapshots are truncated and just for debugging context
