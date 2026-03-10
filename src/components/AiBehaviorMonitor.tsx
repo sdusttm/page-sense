@@ -60,45 +60,10 @@ const clearCrossPageState = () => {
     }
 };
 
-// Check if element is a navigation link (will cause page reload)
-const isNavigationLink = (agentId: string): boolean => {
-    try {
-        const element = document.querySelector(`[data-agent-id="${agentId}"]`);
-        if (!element) return false;
-
-        // Check if it's an anchor tag
-        if (element.tagName === 'A') {
-            const href = element.getAttribute('href');
-            // Navigation links: external URLs, relative paths, but NOT hash links or javascript
-            if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
-                // Check if it's a different page (not same origin + path)
-                try {
-                    const currentPath = window.location.pathname;
-                    const linkUrl = new URL(href, window.location.origin);
-                    const isExternal = linkUrl.origin !== window.location.origin;
-                    const isDifferentPath = linkUrl.pathname !== currentPath;
-
-                    return isExternal || isDifferentPath;
-                } catch {
-                    // If URL parsing fails, assume it's a navigation
-                    return true;
-                }
-            }
-        }
-
-        // Check if element has onclick that might navigate
-        // (This is heuristic, not foolproof)
-        const onClick = element.getAttribute('onclick');
-        if (onClick && (onClick.includes('location') || onClick.includes('navigate'))) {
-            return true;
-        }
-
-        return false;
-    } catch (err) {
-        console.error('[Cross-Page] Error checking navigation:', err);
-        return false;
-    }
-};
+// We removed isNavigationLink because it is unreliable for SPA routers like Next.js.
+// Instead, we will save a "pending" cross-page state BEFORE every click action.
+// If the page unloads or the URL changes, that state is preserved and resumed.
+// If the click completes and the page *doesn't* navigate, we just clear the pending state.
 
 // Helper to compare two snapshots and show what changed
 function compareSnapshots(oldSnapshot: string, newSnapshot: string) {
@@ -316,7 +281,7 @@ const AgentInstructionForm = React.memo(({
 
             // Sequential execution: take snapshot -> get action -> execute -> repeat
             let successCount = resumeState ? resumeState.previousActions.length : 0;
-            const maxIterations = 5; // Prevent infinite loops
+            const maxIterations = 10; // Prevent infinite loops
             const previousActions: string[] = resumeState ? [...resumeState.previousActions] : [];
             let previousSnapshot: string | null = null;
             const startIteration = resumeState ? resumeState.iterationCount : 0;
@@ -378,8 +343,34 @@ const AgentInstructionForm = React.memo(({
 
                 // 4. Execute only the FIRST command (next iteration will get updated state)
                 const cmd = data.commands[0];
-                if (cmd.action && cmd.agent_id) {
+                if (cmd.action) {
                     try {
+                        if (cmd.action === 'ask_confirmation') {
+                            console.log(`[Iteration ${iteration + 1}] LLM asking for confirmation: "${cmd.value}"`);
+                            const userConfirmed = window.confirm(`🤖 AI Agent asks:\n\n${cmd.value}`);
+
+                            const decisionStr = userConfirmed ? 'Confirmed' : 'Denied';
+                            const actionDescription = `Asked for confirmation: "${cmd.value}" -> User ${decisionStr}`;
+
+                            previousActions.push(actionDescription);
+                            console.log(`[Iteration ${iteration + 1}] User ${decisionStr} confirmation.`);
+
+                            // Log to conversation history
+                            onAddMessage({
+                                role: 'system',
+                                content: `🤔 Asked: "${cmd.value}" -> You ${decisionStr}`,
+                                timestamp: new Date().toISOString()
+                            });
+
+                            // Continue to next iteration so LLM can read the decision
+                            previousSnapshot = snapshot;
+                            continue;
+                        }
+
+                        if (!cmd.agent_id) {
+                            throw new Error('agent_id is required for click and type actions');
+                        }
+
                         console.log(`[Iteration ${iteration + 1}] Executing: ${cmd.action} on agent_id="${cmd.agent_id}"`);
 
                         // Get human-readable element description
@@ -416,30 +407,23 @@ const AgentInstructionForm = React.memo(({
                         // Track what action was taken for context
                         const actionDescription = `${cmd.action} on ${elementDescription}${cmd.value ? ` with value "${cmd.value}"` : ''}`;
 
-                        // Check if this action will cause page navigation
-                        if (cmd.action === 'click' && isNavigationLink(cmd.agent_id)) {
-                            console.log('[Cross-Page] Detected navigation link, saving state before click');
-
-                            // Save state BEFORE executing (in case page unloads)
+                        // EAGERLY save cross-page state before EVERY click.
+                        // SPA frameworks like Next.js change the URL without a full page reload,
+                        // breaking traditional unload events and naive <a> tag checks.
+                        if (cmd.action === 'click') {
+                            console.log('[Cross-Page] Click detected, proactively saving resumable state in case of navigation');
                             const crossPageState: CrossPageExecutionState = {
                                 instruction: currentInstruction,
                                 previousActions: [...previousActions, actionDescription],
                                 iterationCount: iteration + 1,
                                 threadId,
                                 timestamp: Date.now(),
-                                url: window.location.href
+                                url: window.location.href // NOTE: URL *before* click
                             };
-
                             saveCrossPageState(crossPageState);
-
-                            onAddMessage({
-                                role: 'system',
-                                content: `🔄 Navigating to new page... (will resume automatically)`,
-                                timestamp: new Date().toISOString()
-                            });
                         }
 
-                        await executeAgentCommand(cmd.action, cmd.agent_id, cmd.value);
+                        await executeAgentCommand(cmd.action as 'click' | 'type', cmd.agent_id, cmd.value);
                         successCount++;
 
                         previousActions.push(actionDescription);
@@ -451,6 +435,12 @@ const AgentInstructionForm = React.memo(({
                         const delay = isUIChangingAction ? 2000 : 500; // Increased to 2000ms for dropdowns
                         console.log(`[Iteration ${iteration + 1}] Waiting ${delay}ms for UI to settle...`);
                         await new Promise(r => setTimeout(r, delay));
+
+                        // NOTE: If this was a Next.js SPA navigation, the URL will have changed by now,
+                        // and the new Page component will be rendered. The loop will seamlessly continue
+                        // to the next iteration, capturing the new page's DOM automatically!
+                        // If this was a hard page reload, the browser would have killed this loop
+                        // and the root layout's useEffect will resume it using the eagerly saved state.
                     } catch (err: any) {
                         throw new Error(`Failed to execute command on element. It might not be visible or available. Details: ${err.message}`);
                     }
@@ -539,7 +529,7 @@ const AgentInstructionForm = React.memo(({
                         alignItems: 'center',
                         cursor: executedActions.length > 0 ? 'pointer' : 'default'
                     }}
-                    onClick={() => executedActions.length > 0 && setShowActionDetails(!showActionDetails)}
+                        onClick={() => executedActions.length > 0 && setShowActionDetails(!showActionDetails)}
                     >
                         <span>{successMessage}</span>
                         {executedActions.length > 0 && (
@@ -638,12 +628,12 @@ export const AiBehaviorMonitor: React.FC = () => {
     const [isOpen, setIsOpen] = useState(false);
     const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
     const [isResumed, setIsResumed] = useState(false);
-    const hasCheckedCrossPageRef = useRef(false);
 
     // AI Visualization state
     const [isVisualizing, setIsVisualizing] = useState(false);
     const [visualizedHtml, setVisualizedHtml] = useState<string | null>(null);
     const [visualizationError, setVisualizationError] = useState<string | null>(null);
+
     const [showVisualizationModal, setShowVisualizationModal] = useState(false);
     const [activeTab, setActiveTab] = useState<'result' | 'prompt'>('result');
 
@@ -864,21 +854,66 @@ export const AiBehaviorMonitor: React.FC = () => {
         }
     }, [threadId]);
 
-    // Check for cross-page execution state on mount - MUST run in main component, not child form
-    // This ensures execution resumes even if the monitor UI is closed
+    // Framework-agnostic URL change listener for SPA navigation
     useEffect(() => {
-        console.log('[Cross-Page] Main component mount check, threadId:', threadId, 'hasChecked:', hasCheckedCrossPageRef.current);
+        if (!threadId) return;
 
-        // Only check once per page load
-        if (hasCheckedCrossPageRef.current || !threadId) {
-            console.log('[Cross-Page] Skipping check (already checked or no threadId)');
+        let lastUrl = window.location.href;
+
+        const checkUrlChange = () => {
+            const currentUrl = window.location.href;
+            if (currentUrl !== lastUrl) {
+                console.log('[Cross-Page] URL changed from', lastUrl, 'to', currentUrl);
+                lastUrl = currentUrl;
+
+                // When URL changes in an SPA, the script execution might be orphaned by the framework
+                // unmounting the old page components. We check if there's a pending state and resume it
+                // on the new page.
+                const state = loadCrossPageState();
+                if (state) {
+                    console.log('[Cross-Page] Found pending state after SPA navigation, resuming...');
+                    // Clear the cross-page state immediately to prevent double-execution
+                    clearCrossPageState();
+
+                    // Wait for new page to render, then trigger form's execute
+                    setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent('page-sense-resume-execution', {
+                            detail: {
+                                instruction: state.instruction,
+                                previousActions: state.previousActions,
+                                iterationCount: state.iterationCount
+                            }
+                        }));
+                    }, 3000); // 3 second delay for page load
+                }
+            }
+        };
+
+        // Listen for native history changes (back/forward buttons)
+        window.addEventListener('popstate', checkUrlChange);
+
+        // For modern SPAs (Next.js, React Router) that use pushState under the hood without triggering popstate
+        // we use a lightweight interval to catch changes.
+        const intervalId = setInterval(checkUrlChange, 500);
+
+        return () => {
+            window.removeEventListener('popstate', checkUrlChange);
+            clearInterval(intervalId);
+        };
+    }, [threadId]);
+
+    // Check for cross-page execution state on mount (for hard reloads)
+    useEffect(() => {
+        console.log('[Cross-Page] Initial mount check, threadId:', threadId);
+
+        // Don't check if we haven't loaded the threadId yet
+        if (!threadId) {
+            console.log('[Cross-Page] Skipping check (no threadId yet)');
             return;
         }
-        hasCheckedCrossPageRef.current = true;
 
         const state = loadCrossPageState();
         if (!state) {
-            console.log('[Cross-Page] No state found in localStorage');
             return;
         }
 
@@ -911,13 +946,10 @@ export const AiBehaviorMonitor: React.FC = () => {
             timestamp: new Date().toISOString()
         }]);
 
-        // Clear the cross-page state immediately to prevent double-execution
-        clearCrossPageState();
-
         // Wait for page to fully load and render, then trigger form's execute
         // We need to wait a bit longer to ensure AgentInstructionForm has mounted
         setTimeout(() => {
-            console.log('[Cross-Page] 🚀 Triggering execution via custom event');
+            console.log('[Cross-Page] 🚀 Triggering execution via custom event (Initial Mount)');
 
             // Dispatch custom event that AgentInstructionForm will listen for
             window.dispatchEvent(new CustomEvent('page-sense-resume-execution', {
@@ -927,9 +959,9 @@ export const AiBehaviorMonitor: React.FC = () => {
                     iterationCount: state.iterationCount
                 }
             }));
-        }, 3000); // 3 second delay for page load + form mount
+        }, 3000);
 
-    }, [threadId]);
+    }, [threadId]); // Re-run whenever threadId loads
 
     // Save conversation history to sessionStorage whenever it changes
     useEffect(() => {
@@ -1169,21 +1201,21 @@ export const AiBehaviorMonitor: React.FC = () => {
         <div
             id="ai-page-sense-monitor-root"
             style={{
-            position: 'fixed',
-            bottom: '20px',
-            right: '20px',
-            width: '320px',
-            height: '400px',
-            backgroundColor: '#fff',
-            border: '1px solid #eaeaea',
-            borderRadius: '12px',
-            display: 'flex',
-            flexDirection: 'column',
-            zIndex: 9999,
-            boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
-            fontFamily: 'sans-serif',
-            overflow: 'hidden'
-        }}>
+                position: 'fixed',
+                bottom: '20px',
+                right: '20px',
+                width: '320px',
+                height: '400px',
+                backgroundColor: '#fff',
+                border: '1px solid #eaeaea',
+                borderRadius: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                zIndex: 9999,
+                boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
+                fontFamily: 'sans-serif',
+                overflow: 'hidden'
+            }}>
             <div style={{
                 padding: '16px',
                 borderBottom: '1px solid #eaeaea',

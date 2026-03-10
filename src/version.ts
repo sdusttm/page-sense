@@ -1,8 +1,8 @@
 // Version info - Update BUILD_TIME when making changes to verify updates in UI
 // The version number will show in green at top of AI Monitor panel
 
-export const VERSION = '0.2.14';
-export const BUILD_TIME = '2026-03-10T02:24:32Z'; // Latest stable build
+export const VERSION = '3.0.1';
+export const BUILD_TIME = '2026-03-09T20:29:00Z'; // Latest stable build
 export const FEATURES = [
     'Event Tracking',
     'AI Monitor',
