@@ -1,19 +1,19 @@
 // Version info - Update BUILD_TIME when making changes to verify updates in UI
 // The version number will show in green at top of AI Monitor panel
+// The version number will show in green at top of AI Monitor panel
 
-export const VERSION = '3.0.1';
-export const BUILD_TIME = '2026-03-09T20:29:00Z'; // Latest stable build
+export const VERSION = '3.1.1';
+export const BUILD_TIME = '2026-03-09T22:05:00Z'; // 3.1.1 Bug Fixes
 export const FEATURES = [
     'Event Tracking',
     'AI Monitor',
     'DOM Visualization',
-    'Sequential Action Execution', // NEW in 0.2.0
-    'Cross-Page Action Support', // NEW in 0.2.2
-    'Checkbox State Detection', // NEW in 0.2.5
-    'Dropdown Auto-Expansion', // NEW in 0.2.5
-    'Hidden Element Discovery', // NEW in 0.2.5
+    'Sequential Action Execution',
+    'Checkbox State Detection',
+    'Dropdown Auto-Expansion',
+    'Hidden Element Discovery',
     'Dynamic UI Retry Logic',
-    'Adaptive Delays',
     'Cross-Page Tracking',
-    'Conversation Persistence'
+    'Conversation Persistence',
+    'Native AST Parsing' // NEW in 3.1.0
 ] as const;

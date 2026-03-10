@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTracker } from '../tracker/useTracker';
-import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
+import { convertHtmlToMarkdown } from '../utils/dom-to-semantic-markdown';
 import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations, temporarilyShowHiddenElements, temporarilyExpandDropdowns } from '../utils/annotator';
 import { removeLibraryElements, restoreLibraryElements } from '../utils/cleanCapture';
 import { VERSION, BUILD_TIME } from '../version';
@@ -23,30 +23,41 @@ const CROSS_PAGE_TIMEOUT_MS = 60000; // 60 seconds max to resume (increased for 
 const saveCrossPageState = (state: CrossPageExecutionState) => {
     try {
         localStorage.setItem(CROSS_PAGE_STORAGE_KEY, JSON.stringify(state));
-        console.log('[Cross-Page] Saved execution state:', state);
+        console.log('[PageSense-Debug] 💾 SAVED state to localStorage:', {
+            instruction: state.instruction,
+            actions: state.previousActions.length,
+            url: state.url
+        });
     } catch (err) {
-        console.error('[Cross-Page] Failed to save state:', err);
+        console.error('[PageSense-Debug] ❌ Failed to save state:', err);
     }
 };
 
 const loadCrossPageState = (): CrossPageExecutionState | null => {
     try {
         const stored = localStorage.getItem(CROSS_PAGE_STORAGE_KEY);
-        if (!stored) return null;
+        if (!stored) {
+            console.log('[PageSense-Debug] 📭 localStorage check: No state found.');
+            return null;
+        }
 
         const state = JSON.parse(stored) as CrossPageExecutionState;
 
         // Check if state is recent (within timeout)
         if (Date.now() - state.timestamp > CROSS_PAGE_TIMEOUT_MS) {
-            console.log('[Cross-Page] State expired, clearing');
+            console.log('[PageSense-Debug] ⏰ State expired (older than 60s), clearing it.');
             clearCrossPageState();
             return null;
         }
 
-        console.log('[Cross-Page] Loaded execution state:', state);
+        console.log('[PageSense-Debug] 📖 LOADED state from localStorage:', {
+            instruction: state.instruction,
+            actions: state.previousActions.length,
+            url: state.url
+        });
         return state;
     } catch (err) {
-        console.error('[Cross-Page] Failed to load state:', err);
+        console.error('[PageSense-Debug] ❌ Failed to load state:', err);
         return null;
     }
 };
@@ -54,9 +65,9 @@ const loadCrossPageState = (): CrossPageExecutionState | null => {
 const clearCrossPageState = () => {
     try {
         localStorage.removeItem(CROSS_PAGE_STORAGE_KEY);
-        console.log('[Cross-Page] Cleared execution state');
+        console.log('[PageSense-Debug] 🗑️ CLEARED state from localStorage');
     } catch (err) {
-        console.error('[Cross-Page] Failed to clear state:', err);
+        console.error('[PageSense-Debug] ❌ Failed to clear state:', err);
     }
 };
 
@@ -98,7 +109,7 @@ const AgentInstructionForm = React.memo(({
     threadId,
     onAddMessage
 }: {
-    executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>;
+    executeAgentCommand: (action: 'click' | 'type' | 'select', agentId: string, value?: string) => Promise<void>;
     apiUrl: string;
     apiKey?: string;
     threadId: string;
@@ -115,11 +126,11 @@ const AgentInstructionForm = React.memo(({
     useEffect(() => {
         const handleResumeEvent = async (event: Event) => {
             const customEvent = event as CustomEvent;
-            console.log('[Cross-Page] AgentInstructionForm received resume event:', customEvent.detail);
+            console.log('[PageSense-Debug] 🎯 AgentInstructionForm RECEIVED "page-sense-resume-execution" payload:', customEvent.detail);
 
             const { instruction, previousActions, iterationCount } = customEvent.detail;
 
-            console.log('[Cross-Page] 🚀 Starting execution with instruction:', instruction);
+            console.log('[PageSense-Debug] 🚀 Automatically starting execution loop with instruction:', instruction);
 
             // Resume execution
             await handleExecuteInstruction(instruction, {
@@ -128,9 +139,11 @@ const AgentInstructionForm = React.memo(({
             });
         };
 
+        console.log('[PageSense-Debug] AgentInstructionForm mounted. Listening for "page-sense-resume-execution" events.');
         window.addEventListener('page-sense-resume-execution', handleResumeEvent);
 
         return () => {
+            console.log('[PageSense-Debug] AgentInstructionForm unmounting. Removing "page-sense-resume-execution" listener.');
             window.removeEventListener('page-sense-resume-execution', handleResumeEvent);
         };
     }, [executeAgentCommand, apiUrl, apiKey, threadId]); // Include dependencies for handleExecuteInstruction
@@ -411,7 +424,7 @@ const AgentInstructionForm = React.memo(({
                         // SPA frameworks like Next.js change the URL without a full page reload,
                         // breaking traditional unload events and naive <a> tag checks.
                         if (cmd.action === 'click') {
-                            console.log('[Cross-Page] Click detected, proactively saving resumable state in case of navigation');
+                            console.log('[PageSense-Debug] 🖱️ CLICK DETECTED. Eagerly saving complete state to localStorage right before clicking...');
                             const crossPageState: CrossPageExecutionState = {
                                 instruction: currentInstruction,
                                 previousActions: [...previousActions, actionDescription],
@@ -423,7 +436,7 @@ const AgentInstructionForm = React.memo(({
                             saveCrossPageState(crossPageState);
                         }
 
-                        await executeAgentCommand(cmd.action as 'click' | 'type', cmd.agent_id, cmd.value);
+                        await executeAgentCommand(cmd.action as 'click' | 'type' | 'select', cmd.agent_id, cmd.value);
                         successCount++;
 
                         previousActions.push(actionDescription);
@@ -856,14 +869,20 @@ export const AiBehaviorMonitor: React.FC = () => {
 
     // Framework-agnostic URL change listener for SPA navigation
     useEffect(() => {
-        if (!threadId) return;
+        if (!threadId) {
+            console.log('[PageSense-Debug] URL Watcher paused: No threadId yet.');
+            return;
+        }
 
+        console.log(`[PageSense-Debug] Starting URL Watcher interval for thread: ${threadId}`);
         let lastUrl = window.location.href;
 
         const checkUrlChange = () => {
             const currentUrl = window.location.href;
             if (currentUrl !== lastUrl) {
-                console.log('[Cross-Page] URL changed from', lastUrl, 'to', currentUrl);
+                console.log(`[PageSense-Debug] 🚨 URL CHANGED DETECTED by Interval!`);
+                console.log(`[PageSense-Debug] Old URL: ${lastUrl}`);
+                console.log(`[PageSense-Debug] New URL: ${currentUrl}`);
                 lastUrl = currentUrl;
 
                 // When URL changes in an SPA, the script execution might be orphaned by the framework
@@ -871,12 +890,21 @@ export const AiBehaviorMonitor: React.FC = () => {
                 // on the new page.
                 const state = loadCrossPageState();
                 if (state) {
-                    console.log('[Cross-Page] Found pending state after SPA navigation, resuming...');
+                    console.log('[PageSense-Debug] 📦 Found pending state in localStorage after SPA navigation!');
+                    console.log('[PageSense-Debug] State details:', {
+                        instruction: state.instruction,
+                        actionsCount: state.previousActions.length,
+                        iteration: state.iterationCount
+                    });
+
                     // Clear the cross-page state immediately to prevent double-execution
+                    console.log('[PageSense-Debug] Clearing localStorage state to prevent double-resumption.');
                     clearCrossPageState();
 
                     // Wait for new page to render, then trigger form's execute
+                    console.log('[PageSense-Debug] Waiting 3000ms for new React components to mount before firing CustomEvent...');
                     setTimeout(() => {
+                        console.log('[PageSense-Debug] 🔫 Firing "page-sense-resume-execution" CustomEvent NOW!');
                         window.dispatchEvent(new CustomEvent('page-sense-resume-execution', {
                             detail: {
                                 instruction: state.instruction,
@@ -885,6 +913,8 @@ export const AiBehaviorMonitor: React.FC = () => {
                             }
                         }));
                     }, 3000); // 3 second delay for page load
+                } else {
+                    console.log('[PageSense-Debug] URL changed, but NO pending state found in localStorage.');
                 }
             }
         };
@@ -924,12 +954,9 @@ export const AiBehaviorMonitor: React.FC = () => {
             iterationCount: state.iterationCount
         });
 
-        // Verify threadId matches (avoid resuming wrong session)
-        if (state.threadId !== threadId) {
-            console.log('[Cross-Page] ThreadId mismatch:', { expected: threadId, actual: state.threadId });
-            clearCrossPageState();
-            return;
-        }
+        // SPA Navigation creates a new threadId because Next.js remounts the component tree.
+        // We intentionally DO NOT verify if `state.threadId === threadId` here because the old 
+        // thread was orphaned. We simply adopt the orphaned state into the new thread!
 
         console.log('[Cross-Page] ✅ Resuming execution after page navigation');
         console.log('[Cross-Page] Previous URL:', state.url);

@@ -60,45 +60,9 @@ export function annotateInteractiveElements(root: Element = document.body): numb
             const id = counter.toString();
             currentNode.setAttribute('data-agent-id', id);
 
-            // Inject a physical text node so the Markdown converter sees the ID
-            const marker = document.createElement('span');
-            marker.className = 'page-sense-agent-marker';
-
-            // Build marker text with checkbox/radio state information
-            let markerText = `[ID: ${id}] `;
-
-            // Add checkbox/radio state for better AI understanding
-            const role = currentNode.getAttribute('role');
-            const tagName = currentNode.tagName.toLowerCase();
-            const ariaChecked = currentNode.getAttribute('aria-checked');
-
-            if (role === 'checkbox' || role === 'radio' || role === 'switch' ||
-                (tagName === 'input' && (currentNode as HTMLInputElement).type === 'checkbox') ||
-                (tagName === 'input' && (currentNode as HTMLInputElement).type === 'radio')) {
-
-                // Determine checked state
-                let isChecked = false;
-                if (tagName === 'input') {
-                    isChecked = (currentNode as HTMLInputElement).checked;
-                } else if (ariaChecked !== null) {
-                    isChecked = ariaChecked === 'true';
-                }
-
-                markerText = `[ID: ${id}${isChecked ? ' ✓' : ' ☐'}] `;
-            }
-
-            marker.textContent = markerText;
-            // Make visible to markdown converter - use tiny font and color that blends in
-            // Can't use opacity:0, left:-9999px, or display:none as markdown converter skips those!
-            marker.style.cssText = 'font-size: 1px; color: transparent; pointer-events: none; user-select: none;';
-
-            // Special handling for input elements (void elements that can't have children)
-            // Insert marker into the parent label instead
-            if (tagName === 'input' && currentNode.parentElement?.tagName.toLowerCase() === 'label') {
-                currentNode.parentElement.insertBefore(marker, currentNode.parentElement.firstChild);
-            } else {
-                currentNode.insertBefore(marker, currentNode.firstChild);
-            }
+            // All interactive elements now just receive a data-agent-id.
+            // SemanticMarkdownAST natively extracts this and renders it beautifully into the markdown.
+            // We no longer need to inject physical span markers into the user's DOM!
 
             counter++;
         }

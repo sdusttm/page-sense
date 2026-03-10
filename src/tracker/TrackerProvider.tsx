@@ -1,6 +1,6 @@
 "use client";
 import React, { createContext, useState, useEffect, ReactNode, useCallback } from 'react';
-import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
+import { convertHtmlToMarkdown } from '../utils/dom-to-semantic-markdown';
 
 export type InteractionEvent = {
     id: string;
@@ -25,7 +25,7 @@ export type TrackerContextType = {
     events: InteractionEvent[];
     isPaused: boolean;
     setIsPaused: React.Dispatch<React.SetStateAction<boolean>>;
-    executeAgentCommand: (action: 'click' | 'type', agentId: string, value?: string) => Promise<void>;
+    executeAgentCommand: (action: 'click' | 'type' | 'select', agentId: string, value?: string) => Promise<void>;
     apiUrl: string;
     apiKey?: string;
     threadId: string;
@@ -118,7 +118,7 @@ export const TrackerProvider: React.FC<{
         });
     }, [maxEvents]);
 
-    const executeAgentCommand = useCallback(async (action: 'click' | 'type', agentId: string, value?: string) => {
+    const executeAgentCommand = useCallback(async (action: 'click' | 'type' | 'select', agentId: string, value?: string) => {
         // Retry with exponential backoff to find dynamically loaded elements
         let element: Element | null = null;
         let attempts = 0;
@@ -183,10 +183,53 @@ export const TrackerProvider: React.FC<{
             (element as HTMLElement).click();
         } else if (action === 'type' && value !== undefined) {
             const inputElement = element as HTMLInputElement | HTMLTextAreaElement;
-            inputElement.value = value;
+
+            // React 16+ overrides the default native value setter. 
+            // If we just do `inputElement.value = value`, React won't register the change.
+            // We must bypass React's setter to trigger an actual synthetic onChange event.
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype,
+                'value'
+            )?.set;
+            const nativeTextAreaValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype,
+                'value'
+            )?.set;
+
+            if (inputElement.tagName.toLowerCase() === 'textarea' && nativeTextAreaValueSetter) {
+                nativeTextAreaValueSetter.call(inputElement, value);
+            } else if (nativeInputValueSetter) {
+                nativeInputValueSetter.call(inputElement, value);
+            } else {
+                inputElement.value = value;
+            }
+
             // Dispatch input and change events to trigger React or vanilla JS listeners
             inputElement.dispatchEvent(new Event('input', { bubbles: true }));
             inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (action === 'select' && value !== undefined) {
+            const selectElement = element as HTMLSelectElement;
+
+            // Try to find an option whose text or value exactly matches the LLM's requested value
+            let optionToSelect = Array.from(selectElement.options).find(opt =>
+                opt.text.trim() === value.trim() || opt.value === value.trim()
+            );
+
+            // Fallback to case-insensitive partial match if exact match fails
+            if (!optionToSelect) {
+                const lowerValue = value.toLowerCase().trim();
+                optionToSelect = Array.from(selectElement.options).find(opt =>
+                    opt.text.toLowerCase().includes(lowerValue) || opt.value.toLowerCase() === lowerValue
+                );
+            }
+
+            if (optionToSelect) {
+                selectElement.value = optionToSelect.value;
+                console.log(`[PageSense] Selected option: "${optionToSelect.text}" (${optionToSelect.value})`);
+                selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+            } else {
+                console.warn(`[PageSense] Failed to find requested option "${value}" inside <select data-agent-id="${agentId}">`);
+            }
         }
 
         // Fade out highlight
