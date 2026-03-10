@@ -5,7 +5,8 @@ on:
     branches:
       - main
     paths:
-      - 'packages/page-sense-library/**'
+      - 'src/**'
+      - 'package.json'
 
 jobs:
   publish:
@@ -31,11 +32,9 @@ jobs:
         run: pnpm install
 
       - name: Build library
-        working-directory: packages/page-sense-library
         run: pnpm run build
 
       - name: Publish to NPM
-        working-directory: packages/page-sense-library
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |

@@ -2,7 +2,7 @@
 // The version number will show in green at top of AI Monitor panel
 
 export const VERSION = '0.2.14';
-export const BUILD_TIME = '2026-03-09T09:36:00Z'; // Latest stable build
+export const BUILD_TIME = '2026-03-10T02:24:32Z'; // Latest stable build
 export const FEATURES = [
     'Event Tracking',
     'AI Monitor',
