@@ -991,70 +991,7 @@ export const AiBehaviorMonitor: React.FC = () => {
         }
     }, [threadId]);
 
-    // Framework-agnostic URL change listener for SPA navigation
-    useEffect(() => {
-        if (!threadId) {
-            console.log('[PageSense-Debug] URL Watcher paused: No threadId yet.');
-            return;
-        }
 
-        console.log(`[PageSense-Debug] Starting URL Watcher interval for thread: ${threadId}`);
-        let lastUrl = window.location.href;
-
-        const checkUrlChange = () => {
-            const currentUrl = window.location.href;
-            if (currentUrl !== lastUrl) {
-                console.log(`[PageSense-Debug] 🚨 URL CHANGED DETECTED by Interval!`);
-                console.log(`[PageSense-Debug] Old URL: ${lastUrl}`);
-                console.log(`[PageSense-Debug] New URL: ${currentUrl}`);
-                lastUrl = currentUrl;
-
-                // When URL changes in an SPA, the script execution might be orphaned by the framework
-                // unmounting the old page components. We check if there's a pending state and resume it
-                // on the new page.
-                const state = loadCrossPageState();
-                if (state) {
-                    console.log('[PageSense-Debug] 📦 Found pending state in localStorage after SPA navigation!');
-                    console.log('[PageSense-Debug] State details:', {
-                        instruction: state.instruction,
-                        actionsCount: state.previousActions.length,
-                        iteration: state.iterationCount
-                    });
-
-                    // Clear the cross-page state immediately to prevent double-execution
-                    console.log('[PageSense-Debug] Clearing localStorage state to prevent double-resumption.');
-                    clearCrossPageState();
-
-                    // Wait for new page to render, then trigger form's execute
-                    console.log('[PageSense-Debug] Waiting 3000ms for new React components to mount before firing CustomEvent...');
-                    setTimeout(() => {
-                        console.log('[PageSense-Debug] 🔫 Firing "page-sense-resume-execution" CustomEvent NOW!');
-                        window.dispatchEvent(new CustomEvent('page-sense-resume-execution', {
-                            detail: {
-                                instruction: state.instruction,
-                                previousActions: state.previousActions,
-                                iterationCount: state.iterationCount
-                            }
-                        }));
-                    }, 3000); // 3 second delay for page load
-                } else {
-                    console.log('[PageSense-Debug] URL changed, but NO pending state found in localStorage.');
-                }
-            }
-        };
-
-        // Listen for native history changes (back/forward buttons)
-        window.addEventListener('popstate', checkUrlChange);
-
-        // For modern SPAs (Next.js, React Router) that use pushState under the hood without triggering popstate
-        // we use a lightweight interval to catch changes.
-        const intervalId = setInterval(checkUrlChange, 500);
-
-        return () => {
-            window.removeEventListener('popstate', checkUrlChange);
-            clearInterval(intervalId);
-        };
-    }, [threadId]);
 
     // Check for cross-page execution state on mount (for hard reloads)
     useEffect(() => {
@@ -1077,6 +1014,10 @@ export const AiBehaviorMonitor: React.FC = () => {
             previousActions: state.previousActions.length,
             iterationCount: state.iterationCount
         });
+
+        // Clear the state immediately so a subsequent hard refresh doesn't double-trigger
+        // an orphaned state if the loop is interrupted before completion.
+        clearCrossPageState();
 
         // SPA Navigation creates a new threadId because Next.js remounts the component tree.
         // We intentionally DO NOT verify if `state.threadId === threadId` here because the old 
