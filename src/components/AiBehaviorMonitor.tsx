@@ -820,8 +820,6 @@ const AgentInstructionForm = React.memo(({
                 currentActionHistory.push({ snapshot, action: cmd });
             }
 
-            setInstruction(''); // clear input on success!
-
             // Clear cross-page state on successful completion
             clearCrossPageState();
 
