@@ -112,7 +112,14 @@ const AgentInstructionForm = React.memo(({
     visitorId,
     threadId,
     onAddMessage,
-    isExpanded
+    isExpanded,
+    actionHistory,
+    setActionHistory,
+    liveActions,
+    setLiveActions,
+    lastInstruction,
+    setLastInstruction,
+    setViewMode
 }: {
     executeAgentCommand: (action: 'click' | 'type' | 'select', agentId: string, value?: string) => Promise<void>;
     apiUrl: string;
@@ -121,17 +128,23 @@ const AgentInstructionForm = React.memo(({
     threadId: string;
     onAddMessage: (message: { role: 'user' | 'assistant' | 'system'; content: string; timestamp: string }) => void;
     isExpanded?: boolean;
+
+    // Lifted State
+    actionHistory: { snapshot: string; action: any }[];
+    setActionHistory: React.Dispatch<React.SetStateAction<{ snapshot: string; action: any }[]>>;
+    liveActions: string[];
+    setLiveActions: React.Dispatch<React.SetStateAction<string[]>>;
+    lastInstruction: string;
+    setLastInstruction: React.Dispatch<React.SetStateAction<string>>;
+    setViewMode: React.Dispatch<React.SetStateAction<'action' | 'command'>>;
 }) => {
     const [instruction, setInstruction] = useState('');
     const [isExecuting, setIsExecuting] = useState(false);
     const [executionError, setExecutionError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
-    const [actionHistory, setActionHistory] = useState<{ snapshot: string; action: any }[]>([]);
-    const [liveActions, setLiveActions] = useState<string[]>([]);
     const [feedback, setFeedback] = useState('');
     const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
     const [feedbackSuccess, setFeedbackSuccess] = useState(false);
-    const [lastInstruction, setLastInstruction] = useState('');
 
     // Custom Confirmation Dialog State
     const [confirmationDialog, setConfirmationDialog] = useState<{
@@ -150,7 +163,7 @@ const AgentInstructionForm = React.memo(({
                 liveActionsEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
             }, 50);
         }
-    }, [liveActions, confirmationDialog]);
+    }, [confirmationDialog]);
 
     // Listen for cross-page execution resume event from main component
     useEffect(() => {
@@ -193,6 +206,7 @@ const AgentInstructionForm = React.memo(({
         if (!currentInstruction.trim()) return;
 
         setLastInstruction(currentInstruction);
+        setViewMode('action');
         setIsExecuting(true);
         setExecutionError(null);
         setSuccessMessage(null);
@@ -481,7 +495,7 @@ const AgentInstructionForm = React.memo(({
                         if (!fallbackSuccessful) {
                             if (previousActions.length > 0) {
                                 const failedAction = previousActions[previousActions.length - 1];
-                                const cleanActionName = failedAction.split(" (❌")[0].split(" ->")[0];
+                                const cleanActionName = typeof failedAction === 'string' ? failedAction.split(" (❌")[0].split(" ->")[0] : 'Unknown';
 
                                 // 3. Flag the specific zero-diff structural warning natively
                                 previousActions.push(`❌ Action ('${cleanActionName}') produced NO visual changes.`);
@@ -1000,21 +1014,6 @@ const AgentInstructionForm = React.memo(({
                         )}
                     </div>
                     <div style={{ maxHeight: isExpanded ? '50vh' : '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        {liveActions.map((action, idx) => (
-                            <div key={idx} style={{
-                                padding: isExpanded ? '6px 10px' : '3px 6px',
-                                backgroundColor: action.startsWith('❌') ? '#fee2e2' : '#fef3c7',
-                                color: action.startsWith('❌') ? '#991b1b' : 'inherit',
-                                borderRadius: '2px',
-                                borderLeft: action.startsWith('❌') ? '2px solid #ef4444' : '2px solid #f59e0b'
-                            }}>
-                                <div style={{ fontWeight: 500 }}>{idx + 1}. {action.split('\n\n<details>')[0]}</div>
-                                {action.includes('<details>') && (
-                                    <div dangerouslySetInnerHTML={{ __html: `<details>${action.split('<details>')[1]}` }} />
-                                )}
-                            </div>
-                        ))}
-
                         {/* 🛑 Custom Inline Confirmation Dialog */}
                         {confirmationDialog && (
                             <div style={{
@@ -1096,6 +1095,12 @@ export const AiBehaviorMonitor: React.FC = () => {
 
     const [showVisualizationModal, setShowVisualizationModal] = useState(false);
     const [activeTab, setActiveTab] = useState<'result' | 'prompt' | 'diff'>('result');
+    const [viewMode, setViewMode] = useState<'action' | 'command'>('command');
+
+    // Lifted state from AgentInstructionForm for Toggle Views
+    const [actionHistory, setActionHistory] = useState<{ snapshot: string; action: any }[]>([]);
+    const [liveActions, setLiveActions] = useState<string[]>([]);
+    const [lastInstruction, setLastInstruction] = useState<string>('');
 
     // Snapshot History state - SINGLE SOURCE OF TRUTH
     const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistory[]>([]);
@@ -1755,6 +1760,15 @@ export const AiBehaviorMonitor: React.FC = () => {
                 threadId={threadId}
                 onAddMessage={(msg) => setConversationHistory(prev => [...prev, msg])}
                 isExpanded={isExpanded}
+
+                // Lifted state props
+                actionHistory={actionHistory}
+                setActionHistory={setActionHistory}
+                liveActions={liveActions}
+                setLiveActions={setLiveActions}
+                lastInstruction={lastInstruction}
+                setLastInstruction={setLastInstruction}
+                setViewMode={setViewMode}
             />
 
             {/* Conversation History */}
@@ -1835,6 +1849,67 @@ export const AiBehaviorMonitor: React.FC = () => {
                 </div>
             )}
 
+            {/* Permanent Goal Reminder */}
+            {lastInstruction && (
+                <div style={{
+                    padding: '12px 16px',
+                    backgroundColor: '#f8fafc',
+                    borderBottom: '1px solid #eaeaea',
+                    fontSize: isExpanded ? '14px' : '12px',
+                    color: '#334155',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '10px'
+                }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: '1px', flexShrink: 0 }}>
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                    </svg>
+                    <span style={{ wordBreak: 'break-word', lineHeight: '1.4' }}>
+                        <span style={{ fontWeight: 600, color: '#0f172a', marginRight: '6px' }}>Goal:</span>
+                        {lastInstruction}
+                    </span>
+                </div>
+            )}
+
+            {/* View Mode Toggle */}
+            <div style={{ display: 'flex', borderBottom: '1px solid #eaeaea', backgroundColor: '#f9f9f9' }}>
+                <button
+                    onClick={() => setViewMode('command')}
+                    style={{
+                        flex: 1,
+                        padding: '10px 0',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        borderBottom: viewMode === 'command' ? '2px solid #0070f3' : '2px solid transparent',
+                        color: viewMode === 'command' ? '#0070f3' : '#666',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                    }}
+                >
+                    Prompt Command View
+                </button>
+                <button
+                    onClick={() => setViewMode('action')}
+                    style={{
+                        flex: 1,
+                        padding: '10px 0',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        borderBottom: viewMode === 'action' ? '2px solid #0070f3' : '2px solid transparent',
+                        color: viewMode === 'action' ? '#0070f3' : '#666',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                    }}
+                >
+                    Tracking Action View
+                </button>
+            </div>
+
             <div style={{ padding: '12px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                     <button
@@ -1868,6 +1943,51 @@ export const AiBehaviorMonitor: React.FC = () => {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '6px', verticalAlign: '-2px' }}><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"></path><path d="m14 7 3 3"></path><path d="M5 6v4"></path><path d="M19 14v4"></path><path d="M10 2v2"></path><path d="M7 8H3"></path><path d="M21 16h-4"></path><path d="M11 3H9"></path></svg> Draw Visualization
                     </button>
                 </div>
+
+                {/* Live Actions Mapping Engine - Conditioned By The View Mode Tabs! */}
+                {viewMode === 'action' ? (
+                    liveActions.map((action, i) => (
+                        <div key={i} style={{
+                            fontSize: '11px',
+                            color: action.startsWith('❌') ? '#991b1b' : '#333',
+                            padding: '8px 10px',
+                            backgroundColor: action.startsWith('❌') ? '#fee2e2' : '#fef3c7',
+                            borderLeft: action.startsWith('❌') ? '3px solid #ef4444' : '3px solid #f59e0b',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '4px'
+                        }}>
+                            <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                {action.split('\n\n<details>')[0]}
+                            </div>
+                            {action.includes('<details>') && (
+                                <div dangerouslySetInnerHTML={{ __html: `<details>${action.split('<details>')[1]}` }} style={{ marginTop: '2px' }} />
+                            )}
+                        </div>
+                    ))
+                ) : (
+                    actionHistory.map((historyItem, i) => (
+                        <div key={i} style={{
+                            fontSize: '10px',
+                            color: '#111',
+                            padding: '8px',
+                            backgroundColor: '#f3f4f6',
+                            borderLeft: '3px solid #3b82f6',
+                            borderRadius: '4px',
+                            fontFamily: 'monospace',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            maxHeight: '150px',
+                            overflowY: 'auto'
+                        }}>
+                            <strong>Step {i + 1} Prompt Payload:</strong>
+                            <div style={{ marginTop: '4px', color: '#4b5563' }}>
+                                {JSON.stringify(historyItem.action, null, 2)}
+                            </div>
+                        </div>
+                    ))
+                )}
 
                 {showVisualizationModal && (
                     <div
