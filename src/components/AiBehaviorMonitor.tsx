@@ -495,8 +495,24 @@ const AgentInstructionForm = React.memo(({
                 const data = await callLLMAgent(snapshot, previousActions);
                 console.log(`[Iteration ${iteration + 1}] LLM response:`, {
                     commands: data.commands?.length || 0,
-                    isComplete: data.isComplete
+                    isComplete: data.isComplete,
+                    isImpossible: data.isImpossible
                 });
+
+                // 🛑 Handle Explicit Impossible States
+                if (data.isImpossible) {
+                    const reason = data.failureReason || "The AI determined this task is impossible to complete based on the current page state.";
+                    console.error(`[Iteration ${iteration + 1}] 🛑 AI DECLARED TASK IMPOSSIBLE: ${reason}`);
+                    setExecutionError(`Task Impossible: ${reason}`);
+
+                    onAddMessage({
+                        role: 'system',
+                        content: `🛑 Giving up: ${reason}`,
+                        timestamp: new Date().toISOString()
+                    });
+
+                    break;
+                }
 
                 // 3. Check if we have commands to execute
                 if (!data.commands || !Array.isArray(data.commands) || data.commands.length === 0) {
