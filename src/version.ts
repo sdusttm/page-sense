@@ -1,8 +1,8 @@
 // The version number will show in green at top of AI Monitor panel
 // The version number will show in green at top of AI Monitor panel
 
-export const VERSION = '3.1.23';
-export const BUILD_TIME = '2026-03-10T11:27:00Z'; // 3.1.23 5-Action Cap
+export const VERSION = '3.3.9';
+export const BUILD_TIME = '2026-03-10T20:50:00Z'; // 3.3.9 Predictive Context Engine
 export const FEATURES = [
     'Event Tracking',
     'AI Monitor',
