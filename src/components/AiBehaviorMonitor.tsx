@@ -588,7 +588,8 @@ const AgentInstructionForm = React.memo(({
                         }
 
                         // Track what action was taken for context
-                        const actionDescription = `${cmd.action} on ${elementDescription}${cmd.value ? ` with value "${cmd.value}"` : ''}${cmd.reasoning ? ` (Reason: ${cmd.reasoning})` : ''}`;
+                        const systemPromptStr = data.systemPrompt ? `\n\n<details><summary style="cursor: pointer; opacity: 0.7; font-size: 10px; margin-top: 4px;">View Raw Prompt Context</summary><pre style="white-space: pre-wrap; font-size: 9px; margin-top: 4px; padding: 4px; background: rgba(0,0,0,0.05); border-radius: 4px; max-height: 150px; overflow-y: auto;">${data.systemPrompt}</pre></details>` : '';
+                        const actionDescription = `${cmd.action} on ${elementDescription}${cmd.value ? ` with value "${cmd.value}"` : ''}${cmd.reasoning ? ` (Reason: ${cmd.reasoning})` : ''}${systemPromptStr}`;
 
                         // EAGERLY save cross-page state before EVERY click.
                         // SPA frameworks like Next.js change the URL without a full page reload,
@@ -872,7 +873,10 @@ const AgentInstructionForm = React.memo(({
                                 borderRadius: '2px',
                                 borderLeft: action.startsWith('❌') ? '2px solid #ef4444' : '2px solid #f59e0b'
                             }}>
-                                {idx + 1}. {action}
+                                <div style={{ fontWeight: 500 }}>{idx + 1}. {action.split('\n\n<details>')[0]}</div>
+                                {action.includes('<details>') && (
+                                    <div dangerouslySetInnerHTML={{ __html: `<details>${action.split('<details>')[1]}` }} />
+                                )}
                             </div>
                         ))}
                         <div ref={liveActionsEndRef} />
