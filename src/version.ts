@@ -1,8 +1,8 @@
 // The version number will show in green at top of AI Monitor panel
 // The version number will show in green at top of AI Monitor panel
 
-export const VERSION = '3.3.11';
-export const BUILD_TIME = '2026-03-10T21:05:00Z'; // 3.3.11 Raw LLM Context Observability
+export const VERSION = '3.3.12';
+export const BUILD_TIME = '2026-03-10T21:15:00Z'; // 3.3.12 Opportunistic Predictive Execution
 export const FEATURES = [
     'Event Tracking',
     'AI Monitor',

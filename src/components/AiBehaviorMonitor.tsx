@@ -682,6 +682,72 @@ const AgentInstructionForm = React.memo(({
                             }
                         }
 
+                        // ==========================================
+                        // 🔮 OPPORTUNISTIC PREDICTIVE EXECUTION
+                        // ==========================================
+                        if (cmd.opportunistic_prediction) {
+                            console.log('[PageSense] 🔮 Opportunistic Prediction detected:', cmd.opportunistic_prediction);
+
+                            // 1. Check if the condition was met in the new DOM snapshot
+                            const currentHtml = convertHtmlToMarkdown(document.body.outerHTML);
+                            if (currentHtml.includes(cmd.opportunistic_prediction.expected_new_text)) {
+                                console.log(`[PageSense] 🔮 CONDITION MET! Found "${cmd.opportunistic_prediction.expected_new_text}". Attempting to execute conditional followup.`);
+
+                                // 2. Find the target element in the live DOM
+                                // We iterate through all elements that have a data-agent-id and see if their text matches
+                                const allAgentElements = document.querySelectorAll('[data-agent-id]');
+                                let matchedElement: Element | null = null;
+                                let matchedAgentId: string | null = null;
+
+                                for (const el of Array.from(allAgentElements)) {
+                                    if (el.textContent && el.textContent.includes(cmd.opportunistic_prediction.conditional_target_text)) {
+                                        matchedElement = el;
+                                        matchedAgentId = el.getAttribute('data-agent-id');
+                                        break; // Take the first functional match
+                                    }
+                                }
+
+                                if (matchedElement && matchedAgentId) {
+                                    console.log(`[PageSense] 🔮 Found element for follow-up! Executing ${cmd.opportunistic_prediction.conditional_followup_action} on agent_id="${matchedAgentId}"`);
+
+                                    // 3. Document the fast-tracked action visually in the trace
+                                    const fastTrackDesc = `⚡ FAST-TRACK: ${cmd.opportunistic_prediction.conditional_followup_action} on "${cmd.opportunistic_prediction.conditional_target_text}" (Predicted Target)`;
+
+                                    // 4. Eagerly preserve state
+                                    if (cmd.opportunistic_prediction.conditional_followup_action === 'click') {
+                                        const crossPageFollowupState: CrossPageExecutionState = {
+                                            instruction: currentInstruction,
+                                            previousActions: [...previousActions, fastTrackDesc],
+                                            actionHistory: [...currentActionHistory],
+                                            iterationCount: iteration + 2, // Technically next step
+                                            threadId,
+                                            timestamp: Date.now(),
+                                            url: window.location.href,
+                                            previousSnapshot: currentHtml
+                                        };
+                                        saveCrossPageState(crossPageFollowupState);
+                                    }
+
+                                    // 5. Execute!
+                                    await executeAgentCommand(cmd.opportunistic_prediction.conditional_followup_action, matchedAgentId, '');
+                                    successCount++;
+
+                                    previousActions.push(fastTrackDesc);
+                                    setLiveActions([...previousActions]);
+
+                                    console.log(`[PageSense] 🔮 Fast-track action completed. Waiting 2000ms...`);
+                                    await new Promise(r => setTimeout(r, 2000));
+
+                                    // Set snapshot to the FINAL state so next loop sees the result of the prediction
+                                    snapshot = convertHtmlToMarkdown(document.body.outerHTML);
+                                } else {
+                                    console.warn(`[PageSense] 🔮 Prediction condition was met, but could not find a target element containing exactly: "${cmd.opportunistic_prediction.conditional_target_text}". Skipping automatic followup.`);
+                                }
+                            } else {
+                                console.log(`[PageSense] 🔮 Prediction missed. New DOM did not contain: "${cmd.opportunistic_prediction.expected_new_text}". Ignoring followup and continuing normal LLM loop.`);
+                            }
+                        }
+
                         // NOTE: If this was a Next.js SPA navigation, the URL will have changed by now,
                         // and the new Page component will be rendered. The loop will seamlessly continue
                         // to the next iteration, capturing the new page's DOM automatically!
