@@ -1,6 +1,6 @@
 {
     "name": "page-sense-library",
-    "version": "3.3.10",
+    "version": "3.3.11",
     "description": "React library to track user behavior and allow AI LLM agents to natively understand and interact with the DOM.",
     "author": "",
     "license": "MIT",
