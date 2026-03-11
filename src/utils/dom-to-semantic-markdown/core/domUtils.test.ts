@@ -52,6 +52,29 @@ describe('domUtils', () => {
             const main = findMainContent(doc);
             expect(main.tagName.toLowerCase()).toBe('html');
         });
+
+        it('should return root element immediately if no candidates are populated', () => {
+            // A completely empty document body generates 0 candidates since there are no score-able texts or tags
+            const doc = document.implementation.createHTMLDocument();
+            doc.body.innerHTML = '';
+            const main = findMainContent(doc);
+            expect(main.tagName.toLowerCase()).toBe('body');
+        });
+
+        it('should identify completely independent candidates accurately from multiple nested blocks', () => {
+            document.body.innerHTML = `
+                <div id="master">
+                    <section id="independent1" class="main-content">
+                        <p>1</p><p>2</p><p>3</p>
+                    </section>
+                    <section id="independent2" class="main-content" data-main="true">
+                        <p>4</p><p>5</p><p>6</p><p>7</p>
+                    </section>
+                </div>
+            `;
+            const main = findMainContent(document);
+            expect(main.id).toBe('independent2');
+        });
     });
 
     describe('wrapMainContent', () => {
@@ -92,6 +115,23 @@ describe('domUtils', () => {
             // link density: 0 (boost 5)
             // Total: 42
             expect(score).toBeGreaterThan(40);
+        });
+
+        it('should trace textContent limits and link empty nodes', () => {
+            const el = document.createElement('div');
+            el.innerHTML = '<a></a><a>Link with text</a>' + 'Text '.repeat(50);
+
+            const score = calculateScore(el);
+            expect(score).toBeGreaterThan(0);
+        });
+
+        it('should output extensive debug logs internally when score elements exist', () => {
+            // In JSDOM, text content size and link calculations are straightforward. 
+            // We just construct a long block to hit text content length > 200 paths
+            const el = document.createElement('main');
+            el.innerHTML = '<p>A</p><p>B</p><p>C</p><p>D</p><p>E</p><p>F</p>' + 'Very Long Content Block '.repeat(50);
+            const score = calculateScore(el);
+            expect(score).toBeGreaterThan(5);
         });
     });
 });

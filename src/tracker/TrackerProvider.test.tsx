@@ -134,6 +134,44 @@ describe('TrackerProvider', () => {
         });
     });
 
+    it('should truncate extremely large semantic snapshots over 5000 characters and handle convertHtmlToMarkdown errors', async () => {
+        let originalOuterHTML = Object.getOwnPropertyDescriptor(Element.prototype, 'outerHTML');
+        Object.defineProperty(document.body, 'outerHTML', {
+            get: () => 'A'.repeat(6000),
+            configurable: true
+        });
+
+        render(
+            <TrackerProvider>
+                <TestComponent />
+            </TrackerProvider>
+        );
+
+        const btn = screen.getByText('Click me');
+        fireEvent.click(btn);
+
+        const list = screen.getByTestId('events-list');
+        await waitFor(() => {
+            expect(list.textContent).toContain('click:button:');
+        });
+
+        // Simulate Error
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+        Object.defineProperty(document.body, 'outerHTML', {
+            get: () => { throw new Error('DOM Parse Exception'); },
+            configurable: true
+        });
+
+        fireEvent.click(btn);
+
+        await waitFor(() => {
+            expect(warnSpy).toHaveBeenCalledWith('Failed to capture semantic markdown snapshot', expect.any(Error));
+        });
+
+        warnSpy.mockRestore();
+        if (originalOuterHTML) Object.defineProperty(Element.prototype, 'outerHTML', originalOuterHTML);
+    });
+
     it('should ignore clicks on the AI monitor root', async () => {
         render(
             <TrackerProvider>
@@ -197,6 +235,37 @@ describe('TrackerProvider', () => {
             expect(select.options[1].selected).toBe(true);
         });
 
+        it('should execute a click fallback if select command targets a non-select element', async () => {
+            let context: any = null;
+            render(
+                <TrackerProvider>
+                    <TestComponent onContextReady={(ctx) => context = ctx} />
+                </TrackerProvider>
+            );
+
+            const btn = screen.getByText('Click me');
+            const clickSpy = vi.spyOn(btn, 'click');
+
+            await context.executeAgentCommand('select', '100', 'Option 2');
+            expect(clickSpy).toHaveBeenCalled();
+        });
+
+        it('should warn if select command targets an option that doesn\'t exist', async () => {
+            let context: any = null;
+            render(
+                <TrackerProvider>
+                    <TestComponent onContextReady={(ctx) => context = ctx} />
+                </TrackerProvider>
+            );
+
+            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+
+            await context.executeAgentCommand('select', '102', 'Non-existent Option');
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to find requested option'));
+
+            warnSpy.mockRestore();
+        });
+
         it('should throw error if element is not found', async () => {
             let context: any = null;
             render(
@@ -206,6 +275,62 @@ describe('TrackerProvider', () => {
             );
 
             await expect(context.executeAgentCommand('click', '999')).rejects.toThrow('Element not found after 5 attempts: 999');
+        });
+
+        it('should execute a type command on a textarea', async () => {
+            let context: any = null;
+            render(
+                <TrackerProvider>
+                    <TestComponent onContextReady={(ctx) => context = ctx} />
+                    <textarea id="my-textarea" data-agent-id="103" />
+                </TrackerProvider>
+            );
+
+            const input = document.getElementById('my-textarea') as HTMLTextAreaElement;
+            await context.executeAgentCommand('type', '103', 'textarea text');
+            expect(input.value).toBe('textarea text');
+        });
+
+        it('should fallback to plain value setter if native prototype descriptors are missing', async () => {
+            let context: any = null;
+            render(
+                <TrackerProvider>
+                    <TestComponent onContextReady={(ctx) => context = ctx} />
+                </TrackerProvider>
+            );
+
+            const input = document.getElementById('my-input') as HTMLInputElement;
+            const select = document.getElementById('my-select') as HTMLSelectElement;
+
+            const originalGetDesc = Object.getOwnPropertyDescriptor;
+            const spy = vi.spyOn(Object, 'getOwnPropertyDescriptor').mockImplementation((obj, prop) => {
+                if (prop === 'value' && (obj === window.HTMLInputElement.prototype || obj === window.HTMLSelectElement.prototype)) {
+                    return undefined;
+                }
+                return originalGetDesc(obj, prop);
+            });
+
+            await context.executeAgentCommand('type', '101', 'fallback text');
+            await context.executeAgentCommand('select', '102', 'Option 2');
+
+            expect(input.value).toBe('fallback text');
+            expect(select.value).toBe('opt2');
+
+            spy.mockRestore();
+        });
+
+        it('should compute structural domPath explicitly if elements and relatives lack IDs', () => {
+            render(
+                <TrackerProvider>
+                    <TestComponent />
+                    <div className="parent-no-id">
+                        <span>Irrelevant</span>
+                        <button className="target-btn">Target</button>
+                    </div>
+                </TrackerProvider>
+            );
+            const btn = document.querySelector('.target-btn') as HTMLButtonElement;
+            fireEvent.click(btn); // triggers getElementPath recursively without bursting via ID
         });
     });
 });

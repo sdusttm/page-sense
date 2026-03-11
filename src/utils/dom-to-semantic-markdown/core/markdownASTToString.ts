@@ -413,9 +413,6 @@ function markdownContentASTToStringRecursive(
                 }
             }
 
-
-        } else {
-            markdownString += renderedNodeString;
         }
     });
 

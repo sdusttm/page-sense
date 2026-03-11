@@ -12,10 +12,10 @@ export default defineConfig({
             exclude: ['src/version.ts', 'src/index.ts', 'src/**/*.test.*', 'src/components/**/*.tsx'],
             thresholds: {
                 perFile: true,
-                statements: 75,
-                branches: 60,
-                functions: 75,
-                lines: 75
+                statements: 80,
+                branches: 80,
+                functions: 80,
+                lines: 80
             }
         }
     }

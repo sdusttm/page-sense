@@ -188,5 +188,40 @@ describe('annotator.ts utilities', () => {
 
             expect(wrapper?.style.getPropertyValue('display')).toBe('none');
         });
+
+        it('should avoid processing the same parent multiple times for nested checkboxes', () => {
+            document.body.innerHTML = `
+                <div id="parent" style="display: none;">
+                    <div id="wrapper1"><input type="checkbox" id="chk1" /></div>
+                    <div id="wrapper2"><input type="checkbox" id="chk2" /></div>
+                </div>
+            `;
+            const restore = temporarilyShowHiddenElements();
+            const parent = document.getElementById('parent');
+            expect(parent?.style.getPropertyValue('display')).toBe('block');
+            restore();
+            expect(parent?.style.getPropertyValue('display')).toBe('none');
+        });
+
+        it('should visually unhide potentially hidden interactive elements like [role="menu"] with 0 opacity or height', () => {
+            document.body.innerHTML = `
+                <div role="menu" id="hidden-menu" style="display: none; opacity: 0; visibility: hidden; height: 0px; max-height: 0px;">
+                    <div role="menuitem">Item 1</div>
+                </div>
+                <div role="menu" id="hidden-menu-2" style="opacity: 0;"></div>
+            `;
+            const menu = document.getElementById('hidden-menu');
+            const menu2 = document.getElementById('hidden-menu-2');
+
+            const restore = temporarilyShowHiddenElements();
+
+            expect(menu?.style.getPropertyValue('display')).toBe('block');
+            expect(menu2?.style.getPropertyValue('display')).toBe('block');
+
+            restore();
+
+            expect(menu?.style.getPropertyValue('display')).toBe('none');
+            expect(menu2?.style.getPropertyValue('display')).toBe('block'); // it restores to its original computed display which was block
+        });
     });
 });

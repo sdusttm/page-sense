@@ -133,15 +133,24 @@ const AgentInstructionForm = React.memo(({
     const [feedbackSuccess, setFeedbackSuccess] = useState(false);
     const [lastInstruction, setLastInstruction] = useState('');
 
+    // Custom Confirmation Dialog State
+    const [confirmationDialog, setConfirmationDialog] = useState<{
+        message: string;
+        resolve: (value: boolean) => void;
+    } | null>(null);
+
     // Auto-scroll ref for the live actions container
     const liveActionsEndRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll effect when live actions update
     useEffect(() => {
         if (liveActionsEndRef.current) {
-            liveActionsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+            // Defer execution until the browser natively flushes the React DOM render layout
+            setTimeout(() => {
+                liveActionsEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            }, 50);
         }
-    }, [liveActions]);
+    }, [liveActions, confirmationDialog]);
 
     // Listen for cross-page execution resume event from main component
     useEffect(() => {
@@ -379,6 +388,13 @@ const AgentInstructionForm = React.memo(({
 
                         let fallbackSuccessful = false;
 
+                        // ✅ Exclude `ask_confirmation` from zero-diff errors because it's a native alert, not a DOM mutation.
+                        if (lastCommand?.action === 'ask_confirmation') {
+                            console.log(`[PageSense] 🧠 Smart Engine: Ignoring zero-diff for ask_confirmation as it intentionally doesn't mutate the DOM.`);
+                            fallbackSuccessful = true; // Pretend it succeeded to skip the error logic
+                            fallbackAttempted = true;
+                        }
+
                         // 🧠 ATTEMPT SMART FALLBACK
                         if (lastCommand && !fallbackAttempted) {
                             console.log(`[PageSense] 🧠 Smart Engine: Attempting automatic fallback for failed action: ${lastCommand.action}`);
@@ -529,7 +545,14 @@ const AgentInstructionForm = React.memo(({
                     try {
                         if (cmd.action === 'ask_confirmation') {
                             console.log(`[Iteration ${iteration + 1}] LLM asking for confirmation: "${cmd.value}"`);
-                            const userConfirmed = window.confirm(`🤖 AI Agent asks:\n\n${cmd.value}`);
+
+                            // 🛑 Hook into React State instead of `window.confirm` to prevent blocking the main thread natively
+                            const userConfirmed = await new Promise<boolean>((resolve) => {
+                                setConfirmationDialog({
+                                    message: cmd.value || 'Are you sure?',
+                                    resolve
+                                });
+                            });
 
                             const decisionStr = userConfirmed ? 'Confirmed' : 'Denied';
                             const actionDescription = `Asked for confirmation: "${cmd.value}" -> User ${decisionStr}${cmd.reasoning ? ` (Reason: ${cmd.reasoning})` : ''}`;
@@ -546,7 +569,10 @@ const AgentInstructionForm = React.memo(({
                             });
 
                             // Continue to next iteration so LLM can read the decision
+                            lastCommand = cmd;
+                            fallbackAttempted = false;
                             previousSnapshot = snapshot;
+                            currentActionHistory.push({ snapshot, action: cmd });
                             continue;
                         }
 
@@ -623,6 +649,10 @@ const AgentInstructionForm = React.memo(({
                                 .join(';');
                         }
 
+                        // Cache existing element IDs before clicking to use for DOM diffing in opportunistic predictions
+                        const preActionAgentElements = document.querySelectorAll('[data-agent-id]');
+                        const preActionAgentIds = new Set(Array.from(preActionAgentElements).map(el => el.getAttribute('data-agent-id')).filter(Boolean));
+
                         // Execute action
                         await executeAgentCommand(cmd.action as 'click' | 'type' | 'select', cmd.agent_id, cmd.value);
                         successCount++;
@@ -696,66 +726,79 @@ const AgentInstructionForm = React.memo(({
                                 // 2. Find the target element in the live DOM
                                 // We iterate through all elements that have a data-agent-id and see if their text matches
                                 const allAgentElements = document.querySelectorAll('[data-agent-id]');
-                                let matchedElement: Element | null = null;
-                                let matchedAgentId: string | null = null;
+                                const targetText = cmd.opportunistic_prediction.conditional_target_text.trim();
 
-                                for (const el of Array.from(allAgentElements)) {
-                                    if (el.textContent && el.textContent.includes(cmd.opportunistic_prediction.conditional_target_text)) {
-                                        matchedElement = el;
-                                        matchedAgentId = el.getAttribute('data-agent-id');
-                                        break; // Take the first functional match
+                                // Robust DOM Diffing: Only consider elements that are NEW to the DOM (i.e., dropdown option that just appeared)
+                                // or elements whose pure textContent exactly matches the target.
+                                const matchingElements = Array.from(allAgentElements).filter(el => {
+                                    const agentId = el.getAttribute('data-agent-id');
+                                    // Skip elements that existed before the click (e.g., global navigation links)
+                                    if (agentId && preActionAgentIds.has(agentId)) return false;
+
+                                    // Robust Text Matching: Only exact matches or very specific substrings (not just partial 'includes')
+                                    const text = el.textContent?.trim() || '';
+                                    return text === targetText || (text.includes(targetText) && text.length <= targetText.length + 5);
+                                });
+
+                                if (matchingElements.length === 1) {
+                                    // Singular confident match!
+                                    const matchedElement = matchingElements[0];
+                                    const matchedAgentId = matchedElement.getAttribute('data-agent-id');
+
+                                    if (matchedAgentId) {
+                                        console.log(`[PageSense] 🔮 Found exact singular new element for follow-up! Executing ${cmd.opportunistic_prediction.conditional_followup_action} on agent_id="${matchedAgentId}"`);
+
+                                        // 3. Document the fast-tracked action visually in the trace
+                                        const fastTrackDesc = `⚡ FAST-TRACK: ${cmd.opportunistic_prediction.conditional_followup_action} on "${cmd.opportunistic_prediction.conditional_target_text}" (Predicted Target)`;
+
+                                        // 4. Eagerly preserve state
+                                        if (cmd.opportunistic_prediction.conditional_followup_action === 'click') {
+                                            const crossPageFollowupState: CrossPageExecutionState = {
+                                                instruction: currentInstruction,
+                                                previousActions: [...previousActions, fastTrackDesc],
+                                                actionHistory: [...currentActionHistory],
+                                                iterationCount: iteration + 2, // Technically next step
+                                                threadId,
+                                                timestamp: Date.now(),
+                                                url: window.location.href,
+                                                previousSnapshot: currentHtml
+                                            };
+                                            saveCrossPageState(crossPageFollowupState);
+                                        }
+
+                                        // 5. Execute!
+                                        await executeAgentCommand(cmd.opportunistic_prediction.conditional_followup_action as any, matchedAgentId, '');
+                                        successCount++;
+
+                                        previousActions.push(fastTrackDesc);
+                                        setLiveActions([...previousActions]);
+
+                                        console.log(`[PageSense] 🔮 Fast-track action completed. Waiting 2000ms...`);
+                                        await new Promise(r => setTimeout(r, 2000));
+
+                                        // Set snapshot to the FINAL state so next loop sees the result of the prediction
+                                        snapshot = convertHtmlToMarkdown(document.body.outerHTML);
+
+                                        // Make sure we explicitly do NOT break or skip the loop 
+                                        // The Next.js framework state mutation might cause unmounted components, but let root catch it 
+                                    } else if (matchingElements.length > 1) {
+                                        console.warn(`[PageSense] 🔮 AMBIGUITY BAILOUT: Prediction condition was met, but found ${matchingElements.length} new structural elements matching "${targetText}". Falling back to strict LLM execution.`);
+                                    } else {
+                                        console.warn(`[PageSense] 🔮 Prediction condition was met, but could not find any strictly NEW target element matching exactly: "${targetText}". Skipping automatic followup.`);
                                     }
-                                }
-
-                                if (matchedElement && matchedAgentId) {
-                                    console.log(`[PageSense] 🔮 Found element for follow-up! Executing ${cmd.opportunistic_prediction.conditional_followup_action} on agent_id="${matchedAgentId}"`);
-
-                                    // 3. Document the fast-tracked action visually in the trace
-                                    const fastTrackDesc = `⚡ FAST-TRACK: ${cmd.opportunistic_prediction.conditional_followup_action} on "${cmd.opportunistic_prediction.conditional_target_text}" (Predicted Target)`;
-
-                                    // 4. Eagerly preserve state
-                                    if (cmd.opportunistic_prediction.conditional_followup_action === 'click') {
-                                        const crossPageFollowupState: CrossPageExecutionState = {
-                                            instruction: currentInstruction,
-                                            previousActions: [...previousActions, fastTrackDesc],
-                                            actionHistory: [...currentActionHistory],
-                                            iterationCount: iteration + 2, // Technically next step
-                                            threadId,
-                                            timestamp: Date.now(),
-                                            url: window.location.href,
-                                            previousSnapshot: currentHtml
-                                        };
-                                        saveCrossPageState(crossPageFollowupState);
-                                    }
-
-                                    // 5. Execute!
-                                    await executeAgentCommand(cmd.opportunistic_prediction.conditional_followup_action, matchedAgentId, '');
-                                    successCount++;
-
-                                    previousActions.push(fastTrackDesc);
-                                    setLiveActions([...previousActions]);
-
-                                    console.log(`[PageSense] 🔮 Fast-track action completed. Waiting 2000ms...`);
-                                    await new Promise(r => setTimeout(r, 2000));
-
-                                    // Set snapshot to the FINAL state so next loop sees the result of the prediction
-                                    snapshot = convertHtmlToMarkdown(document.body.outerHTML);
                                 } else {
-                                    console.warn(`[PageSense] 🔮 Prediction condition was met, but could not find a target element containing exactly: "${cmd.opportunistic_prediction.conditional_target_text}". Skipping automatic followup.`);
+                                    console.log(`[PageSense] 🔮 Prediction missed. New DOM did not contain: "${cmd.opportunistic_prediction.expected_new_text}". Ignoring followup and continuing normal LLM loop.`);
                                 }
-                            } else {
-                                console.log(`[PageSense] 🔮 Prediction missed. New DOM did not contain: "${cmd.opportunistic_prediction.expected_new_text}". Ignoring followup and continuing normal LLM loop.`);
                             }
                         }
-
-                        // NOTE: If this was a Next.js SPA navigation, the URL will have changed by now,
-                        // and the new Page component will be rendered. The loop will seamlessly continue
-                        // to the next iteration, capturing the new page's DOM automatically!
-                        // If this was a hard page reload, the browser would have killed this loop
-                        // and the root layout's useEffect will resume it using the eagerly saved state.
                     } catch (err: any) {
                         throw new Error(`Failed to execute command on element. It might not be visible or available. Details: ${err.message}`);
                     }
+
+                    // NOTE: If this was a Next.js SPA navigation, the URL will have changed by now,
+                    // and the new Page component will be rendered. The loop will seamlessly continue
+                    // to the next iteration, capturing the new page's DOM automatically!
+                    // If this was a hard page reload, the browser would have killed this loop
                 } else {
                     // No valid command, stop
                     console.log(`[Iteration ${iteration + 1}] Invalid command, stopping`);
@@ -945,7 +988,52 @@ const AgentInstructionForm = React.memo(({
                                 )}
                             </div>
                         ))}
-                        <div ref={liveActionsEndRef} />
+
+                        {/* 🛑 Custom Inline Confirmation Dialog */}
+                        {confirmationDialog && (
+                            <div style={{
+                                padding: '8px 12px',
+                                backgroundColor: '#fff',
+                                border: '1px solid #d1d5db',
+                                borderRadius: '6px',
+                                marginTop: '4px',
+                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px'
+                            }}>
+                                <div style={{ fontWeight: 'bold', fontSize: isExpanded ? '13px' : '11px', color: '#1f2937', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                                    Agent is asking for permission:
+                                </div>
+                                <div style={{ fontSize: isExpanded ? '12px' : '10px', color: '#4b5563', whiteSpace: 'pre-wrap' }}>
+                                    {confirmationDialog.message}
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
+                                    <button
+                                        onClick={() => {
+                                            confirmationDialog.resolve(false);
+                                            setConfirmationDialog(null);
+                                        }}
+                                        style={{ padding: '4px 10px', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer', fontSize: isExpanded ? '12px' : '10px', fontWeight: 500 }}
+                                    >
+                                        Deny
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            confirmationDialog.resolve(true);
+                                            setConfirmationDialog(null);
+                                        }}
+                                        style={{ padding: '4px 10px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: isExpanded ? '12px' : '10px', fontWeight: 500 }}
+                                    >
+                                        Confirm
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Anchor for auto-scroll */}
+                        <div ref={liveActionsEndRef} style={{ height: '1px', width: '100%' }} />
                     </div>
                 </div>
             )}
@@ -1684,7 +1772,38 @@ export const AiBehaviorMonitor: React.FC = () => {
                                 ) : (
                                     <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
                                 )}
-                            </span> {msg.content}
+                            </span>
+
+                            {/* Render content dynamically depending on if it has Action details */}
+                            {msg.role === 'assistant' && msg.content.includes('\n\nActions:\n') ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' }}>
+                                    <span style={{ fontWeight: 'bold' }}>{msg.content.split('\n\nActions:\n')[0]}</span>
+                                    {msg.content.split('\n\nActions:\n')[1].split('\n').filter(Boolean).map((actionLine, aIdx) => {
+                                        // The actionLine typically looks like "1. click on 'Foo' <details>..."
+                                        // We strip the prefix "1. " because we apply our own styling
+                                        const cleanAction = actionLine.replace(/^\d+\.\s/, '');
+                                        const isError = cleanAction.startsWith('❌');
+
+                                        return (
+                                            <div key={aIdx} style={{
+                                                padding: isExpanded ? '6px 10px' : '3px 6px',
+                                                backgroundColor: isError ? '#fee2e2' : '#fef3c7',
+                                                color: isError ? '#991b1b' : '#333',
+                                                borderRadius: '2px',
+                                                borderLeft: isError ? '2px solid #ef4444' : '2px solid #f59e0b',
+                                                marginTop: '2px'
+                                            }}>
+                                                <div style={{ fontWeight: 500 }}>{aIdx + 1}. {cleanAction.split('\n\n<details>')[0]}</div>
+                                                {cleanAction.includes('<details>') && (
+                                                    <div dangerouslySetInnerHTML={{ __html: `<details>${cleanAction.split('<details>')[1]}` }} />
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <span>{msg.content}</span>
+                            )}
                         </div>
                     ))}
                 </div>

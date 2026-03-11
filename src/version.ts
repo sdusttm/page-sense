@@ -1,8 +1,8 @@
 // The version number will show in green at top of AI Monitor panel
 // The version number will show in green at top of AI Monitor panel
 
-export const VERSION = '3.3.13';
-export const BUILD_TIME = '2026-03-10T21:28:00Z'; // 3.3.13 Native Human Telemetry Interception
+export const VERSION = '4.0.0';
+export const BUILD_TIME = '2026-03-10T23:38:47Z'; // 4.0.0 80% Test Coverage Suite
 export const FEATURES = [
     'Event Tracking',
     'AI Monitor',

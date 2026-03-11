@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { htmlToMarkdownAST } from './htmlToMarkdownAST';
 import { _Node } from './ElementNode';
 
@@ -112,7 +112,7 @@ describe('htmlToMarkdownAST', () => {
                 <tr><td>Cell</td></tr>
             </table>
         `;
-        const result = htmlToMarkdownAST(div);
+        const result = htmlToMarkdownAST(div, { enableTableColumnTracking: true });
 
         // Has a header separator row
         expect(result.length).toBe(1);
@@ -120,6 +120,8 @@ describe('htmlToMarkdownAST', () => {
         const rows = (result[0] as any).rows;
         expect(rows.length).toBe(3); // Header, Separator, Cell
         expect(rows[1].cells[0].content).toBe('---');
+        // Check column ids populated
+        expect((result[0] as any).colIds.length).toBeGreaterThan(0);
     });
 
     it('should convert text formatting (bold, italic, strikethrough, code)', () => {
@@ -179,5 +181,122 @@ describe('htmlToMarkdownAST', () => {
         const ast2 = htmlToMarkdownAST(label) as any;
         expect(ast2[0].type).toBe('text');
         expect(ast2[0].content).toBe('Label text');
+    });
+
+    it('should convert semantic tags properly', () => {
+        const div = document.createElement('div');
+        div.innerHTML = `
+            <article>Article</article>
+            <aside>Aside</aside>
+            <details>Details</details>
+            <figcaption>Fig</figcaption>
+            <figure>Figure</figure>
+            <footer>Footer</footer>
+            <header>Header</header>
+            <main>Main</main>
+            <mark>Mark</mark>
+            <nav>Nav</nav>
+            <section>Section</section>
+            <summary>Summary</summary>
+            <time>Time</time>
+        `;
+        const ast = htmlToMarkdownAST(div) as any;
+        expect(ast.filter((a: any) => a.type === 'semanticHtml').length).toBe(13);
+    });
+
+    it('should process blockquote and ignore script/style tags', () => {
+        const div = document.createElement('div');
+        div.innerHTML = '<blockquote>Quote</blockquote><script>js</script><style>css</style><noscript>no</noscript>';
+        const ast = htmlToMarkdownAST(div) as any;
+        expect(ast.length).toBe(1);
+        expect(ast[0].type).toBe('blockquote');
+    });
+
+    it('should process video tags', () => {
+        const div = document.createElement('div');
+        div.innerHTML = '<video src="my.mp4" poster="post.png" controls></video>';
+        const ast = htmlToMarkdownAST(div) as any;
+        expect(ast[0].type).toBe('video');
+    });
+
+    it('should handle processUnhandledElement override correctly', () => {
+        const div = document.createElement('div');
+        div.innerHTML = '<custom-tag>Test</custom-tag>';
+        const processUnhandledElement = (elem: Element) => {
+            if (elem.tagName.toLowerCase() === 'custom-tag') return [{ type: 'text', content: 'CUSTOM' }] as any;
+            return null;
+        };
+        const ast = htmlToMarkdownAST(div, { processUnhandledElement }) as any;
+        expect(ast[0].content).toBe('CUSTOM');
+    });
+
+    it('should parse extended metadata (og, twitter, json-ld) and basic meta tags', () => {
+        const doc = document.createElement('html');
+        doc.innerHTML = `
+            <head>
+                <meta property="og:title" content="Open Graph Title">
+                <meta name="twitter:card" content="summary">
+                <meta name="description" content="Meta Description">
+                <meta name="viewport" content="width=device-width">
+                <script type="application/ld+json">{"@type": "WebPage"}</script>
+                <script type="application/ld+json">{invalid-json}</script>
+            </head>
+        `;
+        const ast = htmlToMarkdownAST(doc, { includeMetaData: 'extended' }) as any;
+        expect(ast[0].type).toBe('meta');
+        expect(ast[0].content.openGraph.title).toBe('Open Graph Title');
+        expect(ast[0].content.twitter.card).toBe('summary');
+        expect(ast[0].content.standard.description).toBe('Meta Description');
+        expect(ast[0].content.standard.viewport).toBeUndefined();
+
+        const astBasic = htmlToMarkdownAST(doc, { includeMetaData: 'basic' }) as any;
+        expect(astBasic[0].content.openGraph).toEqual({});
+        expect(astBasic[0].content.jsonLd).toBeUndefined();
+    });
+
+    it('should map select element values using selectedIndex natively ignoring select loop bindings', () => {
+        const div = document.createElement('div');
+        div.innerHTML = '<select><option>Opt 1</option><option>Opt 2</option></select>';
+        const select = div.querySelector('select') as HTMLSelectElement;
+
+        // JSDOM dynamically keeps option.selected in sync. We mock it natively false to force the index fallback.
+        Object.defineProperty(select.options[0], 'selected', { value: false });
+        Object.defineProperty(select.options[1], 'selected', { value: false });
+        select.selectedIndex = 1;
+
+        const ast = htmlToMarkdownAST(div) as any;
+        expect(ast[0].value).toBe('Opt 2');
+    });
+
+    it('should generate debug logs when debug options are supplied', () => {
+        const spy = vi.spyOn(console, 'log').mockImplementation(() => { });
+        const div = document.createElement('div');
+        div.innerHTML = '<p>debug</p>';
+        htmlToMarkdownAST(div, { debug: true });
+        expect(spy).toHaveBeenCalled();
+        spy.mockRestore();
+    });
+
+    it('should skip data:image a href elements natively', () => {
+        const div = document.createElement('div');
+        div.innerHTML = '<a href="data:image/png">Data Image</a>';
+        const result = htmlToMarkdownAST(div) as any;
+        expect(result[0].href).toBe('-');
+    });
+
+    it('should fallback to # if href is not natively stringifiable', () => {
+        const div = document.createElement('div');
+        const a = document.createElement('a');
+        div.appendChild(a);
+        Object.defineProperty(a, 'href', { value: 12345 });
+        const result = htmlToMarkdownAST(div) as any;
+        expect(result[0].href).toBe('#');
+    });
+
+    it('should map <br> line breaks to explicit newline text nodes', () => {
+        const div = document.createElement('div');
+        div.innerHTML = 'a<br>b';
+        const ast = htmlToMarkdownAST(div) as any;
+        expect(ast[1].content).toBe('\n');
     });
 });
