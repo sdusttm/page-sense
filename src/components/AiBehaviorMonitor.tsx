@@ -4,12 +4,14 @@ import { useTracker } from '../tracker/useTracker';
 import { convertHtmlToMarkdown } from '../utils/dom-to-semantic-markdown';
 import { annotateInteractiveElements, clearAnnotations, clearVisualAnnotations, temporarilyShowHiddenElements, temporarilyExpandDropdowns, syncStateToAttributes } from '../utils/annotator';
 import { removeLibraryElements, restoreLibraryElements } from '../utils/cleanCapture';
+import { diffChars } from 'diff';
 import { VERSION, BUILD_TIME } from '../version';
 
 // Cross-page execution state interface
 interface CrossPageExecutionState {
     instruction: string;
     previousActions: string[];
+    actionHistory?: { snapshot: string; action: any }[];
     iterationCount: number;
     threadId: string;
     timestamp: number;
@@ -107,21 +109,39 @@ const AgentInstructionForm = React.memo(({
     executeAgentCommand,
     apiUrl,
     apiKey,
+    visitorId,
     threadId,
-    onAddMessage
+    onAddMessage,
+    isExpanded
 }: {
     executeAgentCommand: (action: 'click' | 'type' | 'select', agentId: string, value?: string) => Promise<void>;
     apiUrl: string;
     apiKey?: string;
+    visitorId?: string;
     threadId: string;
     onAddMessage: (message: { role: 'user' | 'assistant' | 'system'; content: string; timestamp: string }) => void;
+    isExpanded?: boolean;
 }) => {
     const [instruction, setInstruction] = useState('');
     const [isExecuting, setIsExecuting] = useState(false);
     const [executionError, setExecutionError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
-    const [executedActions, setExecutedActions] = useState<string[]>([]);
-    const [showActionDetails, setShowActionDetails] = useState(false);
+    const [actionHistory, setActionHistory] = useState<{ snapshot: string; action: any }[]>([]);
+    const [liveActions, setLiveActions] = useState<string[]>([]);
+    const [feedback, setFeedback] = useState('');
+    const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+    const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+    const [lastInstruction, setLastInstruction] = useState('');
+
+    // Auto-scroll ref for the live actions container
+    const liveActionsEndRef = useRef<HTMLDivElement>(null);
+
+    // Auto-scroll effect when live actions update
+    useEffect(() => {
+        if (liveActionsEndRef.current) {
+            liveActionsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [liveActions]);
 
     // Listen for cross-page execution resume event from main component
     useEffect(() => {
@@ -129,13 +149,14 @@ const AgentInstructionForm = React.memo(({
             const customEvent = event as CustomEvent;
             console.log('[PageSense-Debug] 🎯 AgentInstructionForm RECEIVED "page-sense-resume-execution" payload:', customEvent.detail);
 
-            const { instruction, previousActions, iterationCount } = customEvent.detail;
+            const { instruction, previousActions, iterationCount, actionHistory } = customEvent.detail;
 
             console.log('[PageSense-Debug] 🚀 Automatically starting execution loop with instruction:', instruction);
 
             // Resume execution
             await handleExecuteInstruction(instruction, {
                 previousActions,
+                actionHistory,
                 iterationCount,
                 previousSnapshot: customEvent.detail.previousSnapshot
             });
@@ -154,6 +175,7 @@ const AgentInstructionForm = React.memo(({
         instructionOverride?: string,
         resumeState?: {
             previousActions: string[];
+            actionHistory?: { snapshot: string; action: any }[];
             iterationCount: number;
             previousSnapshot?: string;
         }
@@ -161,9 +183,14 @@ const AgentInstructionForm = React.memo(({
         const currentInstruction = instructionOverride || instruction;
         if (!currentInstruction.trim()) return;
 
+        setLastInstruction(currentInstruction);
         setIsExecuting(true);
         setExecutionError(null);
         setSuccessMessage(null);
+        setFeedback('');
+        setFeedbackSuccess(false);
+        setActionHistory([]);
+        setLiveActions(resumeState?.previousActions ? [...resumeState.previousActions] : []);
 
         // Add user message to conversation (only if not resuming)
         if (!resumeState) {
@@ -173,6 +200,8 @@ const AgentInstructionForm = React.memo(({
                 timestamp: new Date().toISOString()
             });
         }
+
+        let currentActionHistory: { snapshot: string; action: any }[] = resumeState?.actionHistory ? [...resumeState.actionHistory] : [];
 
         try {
             // Helper function to capture a clean snapshot
@@ -282,6 +311,7 @@ const AgentInstructionForm = React.memo(({
                         instruction: currentInstruction,
                         snapshot,
                         threadId,
+                        visitorId,
                         url: window.location.href,
                         previousActions // Include context of what actions were already taken
                     })
@@ -303,7 +333,7 @@ const AgentInstructionForm = React.memo(({
 
             // Sequential execution: take snapshot -> get action -> execute -> repeat
             let successCount = resumeState ? resumeState.previousActions.length : 0;
-            const maxIterations = 10; // Prevent infinite loops
+            const maxIterations = 5; // Prevent infinite loops
             const previousActions: string[] = resumeState ? [...resumeState.previousActions] : [];
             let previousSnapshot: string | null = resumeState?.previousSnapshot || null;
             let lastCommand: any = null;
@@ -412,6 +442,7 @@ const AgentInstructionForm = React.memo(({
                                             if (previousActions.length > 0) {
                                                 const popped = previousActions.pop();
                                                 previousActions.push(`${popped} -> 🌟 SMART FALLBACK: Auto-corrected and successfully selected "${matchingOption.text}"`);
+                                                setLiveActions([...previousActions]);
                                             }
 
                                             onAddMessage({
@@ -436,6 +467,7 @@ const AgentInstructionForm = React.memo(({
 
                                 // 3. Push a single, commanding error message AFTER the failed action
                                 previousActions.push(`❌ ERROR: Your action ('${cleanActionName}') produced NO visual changes. If you just clicked a Save/Submit button, it might be a silent save. If your ultimate objective is already visibly fulfilled on the screen, please return isComplete: true. Otherwise, try a DIFFERENT action. DO NOT repeat the exact same action!`);
+                                setLiveActions([...previousActions]);
                             }
                         }
                     }
@@ -474,6 +506,25 @@ const AgentInstructionForm = React.memo(({
                     }
                 }
 
+                // 🛑 Toggle Loop Breaker: Detect if the agent is stuck opening/closing the same dropdown
+                if (previousActions.length >= 3) {
+                    const last1 = previousActions[previousActions.length - 1];
+                    const last2 = previousActions[previousActions.length - 2];
+                    const last3 = previousActions[previousActions.length - 3];
+                    const newActionStr = `${cmd.action} on agent_id=${cmd.agent_id}`;
+
+                    // Simple check if the string representations are identical
+                    if (last1 === last2 && last2 === last3 && last1.startsWith(newActionStr)) {
+                        console.error(`[Iteration ${iteration + 1}] 🛑 TOGGLE LOOP BREAKER TRIGGERED: LLM repeated '${newActionStr}' 4 times. Aborting execution.`);
+                        setExecutionError(`Execution aborted: The AI agent got stuck in a repetitive conceptual loop, endlessly toggling the same element without progressing.`);
+                        break;
+                    } else if (last1 === last2 && last1.startsWith(newActionStr)) {
+                        // If repeated 3 times natively, inject a stern warning to force it to look elsewhere
+                        previousActions.push(`❌ ERROR: You have repeated this exact action 3 times in a row! It is NOT working. You are stuck in a reasoning loop opening and closing the same menu. STOP clicking this element and try a COMPLETELY DIFFERENT approach. Remember to look at the entire page, including top-level category buttons!`);
+                        setLiveActions([...previousActions]);
+                    }
+                }
+
                 if (cmd.action) {
                     try {
                         if (cmd.action === 'ask_confirmation') {
@@ -481,9 +532,10 @@ const AgentInstructionForm = React.memo(({
                             const userConfirmed = window.confirm(`🤖 AI Agent asks:\n\n${cmd.value}`);
 
                             const decisionStr = userConfirmed ? 'Confirmed' : 'Denied';
-                            const actionDescription = `Asked for confirmation: "${cmd.value}" -> User ${decisionStr}`;
+                            const actionDescription = `Asked for confirmation: "${cmd.value}" -> User ${decisionStr}${cmd.reasoning ? ` (Reason: ${cmd.reasoning})` : ''}`;
 
                             previousActions.push(actionDescription);
+                            setLiveActions([...previousActions]);
                             console.log(`[Iteration ${iteration + 1}] User ${decisionStr} confirmation.`);
 
                             // Log to conversation history
@@ -536,7 +588,7 @@ const AgentInstructionForm = React.memo(({
                         }
 
                         // Track what action was taken for context
-                        const actionDescription = `${cmd.action} on ${elementDescription}${cmd.value ? ` with value "${cmd.value}"` : ''}`;
+                        const actionDescription = `${cmd.action} on ${elementDescription}${cmd.value ? ` with value "${cmd.value}"` : ''}${cmd.reasoning ? ` (Reason: ${cmd.reasoning})` : ''}`;
 
                         // EAGERLY save cross-page state before EVERY click.
                         // SPA frameworks like Next.js change the URL without a full page reload,
@@ -546,6 +598,7 @@ const AgentInstructionForm = React.memo(({
                             const crossPageState: CrossPageExecutionState = {
                                 instruction: currentInstruction,
                                 previousActions: [...previousActions, actionDescription],
+                                actionHistory: [...currentActionHistory, { snapshot, action: cmd }],
                                 iterationCount: iteration + 1,
                                 threadId,
                                 timestamp: Date.now(),
@@ -555,10 +608,26 @@ const AgentInstructionForm = React.memo(({
                             saveCrossPageState(crossPageState);
                         }
 
+                        // Extract Element Semantics for Telemetry Hashing BEFORE execution mutates it
+                        const elem = document.querySelector(`[data-agent-id="${cmd.agent_id}"]`);
+                        let tag_name = 'UNKNOWN';
+                        let text_content = '';
+                        let aria_signatures = '';
+                        if (elem) {
+                            tag_name = elem.tagName.toLowerCase();
+                            text_content = (elem.textContent || '').substring(0, 100).trim();
+                            aria_signatures = Array.from(elem.attributes)
+                                .filter(attr => attr.name.startsWith('aria-') || attr.name === 'role')
+                                .map(attr => `${attr.name}=${attr.value}`)
+                                .join(';');
+                        }
+
+                        // Execute action
                         await executeAgentCommand(cmd.action as 'click' | 'type' | 'select', cmd.agent_id, cmd.value);
                         successCount++;
 
                         previousActions.push(actionDescription);
+                        setLiveActions([...previousActions]);
                         console.log(`[Iteration ${iteration + 1}] Action completed: ${actionDescription}`);
 
                         // Longer delay after clicks (likely to trigger UI changes like opening modals, dropdowns, etc.)
@@ -567,6 +636,50 @@ const AgentInstructionForm = React.memo(({
                         const delay = isUIChangingAction ? 2000 : 500; // Increased to 2000ms for dropdowns
                         console.log(`[Iteration ${iteration + 1}] Waiting ${delay}ms for UI to settle...`);
                         await new Promise(r => setTimeout(r, delay));
+
+                        // Post-Execution Telemetry Diffing
+                        if (apiKey) {
+                            try {
+                                // Temporarily prepare DOM for clean snapshotting
+                                const newRemovedElements = removeLibraryElements();
+                                const newCollapseDropdowns = temporarilyExpandDropdowns();
+                                const newRestoreHiddenElements = temporarilyShowHiddenElements();
+                                syncStateToAttributes();
+
+                                const rawHtml = document.body.outerHTML;
+                                const newSnapshot = convertHtmlToMarkdown(rawHtml);
+
+                                // Clean up DOM
+                                newRestoreHiddenElements();
+                                newCollapseDropdowns();
+                                restoreLibraryElements(newRemovedElements);
+                                clearVisualAnnotations(document.body);
+
+                                // Basic diff logic: we just send the new mutated snapshot section if needed,
+                                // or the server can handle deeper structural diffing.
+                                // For MVP, we'll send the raw new snapshot and let the LLM map see the layout change.
+
+                                await fetch(`${apiUrl}/agent/telemetry`, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'Authorization': `Bearer ${apiKey}`,
+                                    },
+                                    body: JSON.stringify({
+                                        url_pattern: window.location.pathname,
+                                        tag_name,
+                                        text_content,
+                                        aria_signatures,
+                                        action_type: cmd.action,
+                                        diff_payload: newSnapshot, // The resultant DOM structure
+                                        status: 'SUCCESS'
+                                    })
+                                });
+                                console.log('[Telemetry] Action Diff Pushed Successfully.');
+                            } catch (telemetryErr) {
+                                console.error('[Telemetry] Background ping failed:', telemetryErr);
+                            }
+                        }
 
                         // NOTE: If this was a Next.js SPA navigation, the URL will have changed by now,
                         // and the new Page component will be rendered. The loop will seamlessly continue
@@ -594,6 +707,7 @@ const AgentInstructionForm = React.memo(({
                 lastCommand = cmd;
                 fallbackAttempted = false;
                 previousSnapshot = snapshot;
+                currentActionHistory.push({ snapshot, action: cmd });
             }
 
             setInstruction(''); // clear input on success!
@@ -604,12 +718,7 @@ const AgentInstructionForm = React.memo(({
             if (successCount > 0) {
                 const responseMsg = `Successfully executed ${successCount} action${successCount > 1 ? 's' : ''}`;
                 setSuccessMessage(responseMsg);
-                setExecutedActions(previousActions); // Store actions for expandable details
-                setShowActionDetails(false); // Reset expansion state
-                setTimeout(() => {
-                    setSuccessMessage(null);
-                    setExecutedActions([]);
-                }, 8000); // Increased timeout to give time to expand
+                setActionHistory(currentActionHistory);
 
                 // Add assistant response to conversation with details
                 const detailsText = previousActions.length > 0
@@ -624,6 +733,7 @@ const AgentInstructionForm = React.memo(({
         } catch (err: any) {
             const errorMsg = err.message || 'An error occurred';
             setExecutionError(errorMsg);
+            setActionHistory(currentActionHistory);
 
             // Clear cross-page state on error
             clearCrossPageState();
@@ -642,60 +752,50 @@ const AgentInstructionForm = React.memo(({
 
     return (
         <div style={{ padding: '12px 12px 0 12px', borderBottom: '1px solid #eaeaea', backgroundColor: '#fafafa' }}>
-            {executionError && (
+            {executionError && liveActions.length === 0 && (
                 <div style={{ color: 'red', fontSize: '10px', marginBottom: '8px', padding: '4px', backgroundColor: '#fee', borderRadius: '4px' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }}><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg> Error: {executionError}
                 </div>
             )}
-            {successMessage && (
-                <div style={{
-                    color: 'green',
-                    fontSize: '10px',
-                    marginBottom: '8px',
-                    padding: '8px',
-                    backgroundColor: '#efe',
-                    borderRadius: '4px',
-                    border: '1px solid #4caf50'
-                }}>
-                    <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        cursor: executedActions.length > 0 ? 'pointer' : 'default'
-                    }}
-                        onClick={() => executedActions.length > 0 && setShowActionDetails(!showActionDetails)}
-                    >
-                        <span>{successMessage}</span>
-                        {executedActions.length > 0 && (
-                            <span style={{
-                                fontSize: '12px',
-                                marginLeft: '8px',
-                                userSelect: 'none'
-                            }}>
-                                {showActionDetails ? '▼' : '▶'}
-                            </span>
-                        )}
-                    </div>
-                    {showActionDetails && executedActions.length > 0 && (
-                        <div style={{
-                            marginTop: '8px',
-                            paddingTop: '8px',
-                            borderTop: '1px solid #4caf50',
-                            fontSize: '9px',
-                            fontFamily: 'monospace'
-                        }}>
-                            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Actions executed:</div>
-                            {executedActions.map((action, idx) => (
-                                <div key={idx} style={{
-                                    padding: '2px 4px',
-                                    backgroundColor: '#fff',
-                                    marginBottom: '2px',
-                                    borderRadius: '2px'
-                                }}>
-                                    {idx + 1}. {action}
-                                </div>
-                            ))}
+            {(successMessage || executionError) && actionHistory.length > 0 && (
+                <div style={{ padding: '8px', backgroundColor: '#f0fdf4', borderRadius: '4px', border: '1px solid #bbf7d0', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#166534', marginBottom: '4px' }}>Feedback? Help the AI improve on this page.</div>
+                    {!feedbackSuccess ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <textarea
+                                value={feedback}
+                                onChange={e => setFeedback(e.target.value)}
+                                placeholder="E.g., You selected the wrong checkout button..."
+                                disabled={isSubmittingFeedback}
+                                rows={2}
+                                style={{ width: '100%', padding: '6px', borderRadius: '4px', border: '1px solid #86efac', fontSize: '11px', resize: 'none', fontFamily: 'inherit' }}
+                            />
+                            <button
+                                onClick={async () => {
+                                    if (!feedback.trim()) return;
+                                    setIsSubmittingFeedback(true);
+                                    try {
+                                        const res = await fetch(`${apiUrl.replace(/\/$/, '')}/feedback`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                                            body: JSON.stringify({ url: window.location.href, instruction: lastInstruction, feedback, actionHistory, visitorId })
+                                        });
+                                        if (res.ok) setFeedbackSuccess(true);
+                                        else console.error('Feedback failed:', await res.text());
+                                    } catch (err) {
+                                        console.error('Feedback error:', err);
+                                    } finally {
+                                        setIsSubmittingFeedback(false);
+                                    }
+                                }}
+                                disabled={isSubmittingFeedback || !feedback.trim()}
+                                style={{ padding: '4px 8px', backgroundColor: isSubmittingFeedback ? '#ccc' : '#22c55e', color: 'white', border: 'none', borderRadius: '4px', cursor: isSubmittingFeedback || !feedback.trim() ? 'not-allowed' : 'pointer', fontSize: '10px', fontWeight: 'bold', alignSelf: 'flex-end' }}
+                            >
+                                {isSubmittingFeedback ? 'Submitting...' : 'Submit Rules'}
+                            </button>
                         </div>
+                    ) : (
+                        <div style={{ fontSize: '10px', color: '#166534' }}>✓ Prompt rules generated & saved successfully.</div>
                     )}
                 </div>
             )}
@@ -714,7 +814,7 @@ const AgentInstructionForm = React.memo(({
                         padding: '6px 12px',
                         borderRadius: '4px',
                         border: '1px solid #ccc',
-                        fontSize: '12px'
+                        fontSize: isExpanded ? '14px' : '12px'
                     }}
                 />
                 <button
@@ -727,18 +827,59 @@ const AgentInstructionForm = React.memo(({
                         border: 'none',
                         borderRadius: '4px',
                         cursor: isExecuting || !instruction.trim() ? 'not-allowed' : 'pointer',
-                        fontSize: '12px',
+                        fontSize: isExpanded ? '14px' : '12px',
                         fontWeight: 'bold'
                     }}
                 >
                     {isExecuting ? '...' : 'Cmd'}
                 </button>
             </form >
-            {executionError && (
-                <div style={{ color: 'red', fontSize: '10px', marginBottom: '8px' }}>
-                    Error: {executionError}
+            {liveActions.length > 0 && (
+                <div style={{
+                    marginTop: '4px',
+                    padding: '8px',
+                    backgroundColor: isExecuting ? '#fffbeb' : executionError ? '#fef2f2' : '#f0fdf4',
+                    border: isExecuting ? '1px solid #fcd34d' : executionError ? '1px solid #fecaca' : '1px solid #bbf7d0',
+                    borderRadius: '4px',
+                    fontSize: isExpanded ? '12px' : '9px',
+                    fontFamily: 'monospace',
+                    color: isExecuting ? '#92400e' : executionError ? '#991b1b' : '#166534'
+                }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        {isExecuting ? (
+                            <>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1.5s linear infinite' }}><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
+                                Agent is working...
+                            </>
+                        ) : executionError ? (
+                            <>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+                                {executionError}
+                            </>
+                        ) : (
+                            <>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                                {successMessage || 'Agent finished'}
+                            </>
+                        )}
+                    </div>
+                    <div style={{ maxHeight: isExpanded ? '50vh' : '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        {liveActions.map((action, idx) => (
+                            <div key={idx} style={{
+                                padding: isExpanded ? '6px 10px' : '3px 6px',
+                                backgroundColor: action.startsWith('❌') ? '#fee2e2' : '#fef3c7',
+                                color: action.startsWith('❌') ? '#991b1b' : 'inherit',
+                                borderRadius: '2px',
+                                borderLeft: action.startsWith('❌') ? '2px solid #ef4444' : '2px solid #f59e0b'
+                            }}>
+                                {idx + 1}. {action}
+                            </div>
+                        ))}
+                        <div ref={liveActionsEndRef} />
+                    </div>
                 </div>
             )}
+            {/* (Removed duplicate bottom execution error block as it is now inside liveActions) */}
         </div >
     );
 });
@@ -758,10 +899,11 @@ type SnapshotHistory = {
 };
 
 export const AiBehaviorMonitor: React.FC = () => {
-    const { events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey, threadId } = useTracker();
+    const { events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey, visitorId, threadId } = useTracker();
     const [isOpen, setIsOpen] = useState(false);
     const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
     const [isResumed, setIsResumed] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
 
     // AI Visualization state
     const [isVisualizing, setIsVisualizing] = useState(false);
@@ -769,7 +911,7 @@ export const AiBehaviorMonitor: React.FC = () => {
     const [visualizationError, setVisualizationError] = useState<string | null>(null);
 
     const [showVisualizationModal, setShowVisualizationModal] = useState(false);
-    const [activeTab, setActiveTab] = useState<'result' | 'prompt'>('result');
+    const [activeTab, setActiveTab] = useState<'result' | 'prompt' | 'diff'>('result');
 
     // Snapshot History state - SINGLE SOURCE OF TRUTH
     const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistory[]>([]);
@@ -1322,8 +1464,8 @@ export const AiBehaviorMonitor: React.FC = () => {
                 position: 'fixed',
                 bottom: '20px',
                 right: '20px',
-                width: '320px',
-                height: '400px',
+                width: isExpanded ? '800px' : '320px',
+                height: isExpanded ? '90vh' : '400px',
                 backgroundColor: 'rgba(255, 255, 255, 0.85)',
                 backdropFilter: 'blur(24px)',
                 WebkitBackdropFilter: 'blur(24px)',
@@ -1334,7 +1476,8 @@ export const AiBehaviorMonitor: React.FC = () => {
                 zIndex: 9999,
                 boxShadow: '0 24px 80px -12px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.02)',
                 fontFamily: 'sans-serif',
-                overflow: 'hidden'
+                overflow: 'hidden',
+                transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
             }}>
             <div style={{
                 padding: '16px',
@@ -1346,7 +1489,7 @@ export const AiBehaviorMonitor: React.FC = () => {
             }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#111', display: 'flex', alignItems: 'center', gap: '6px', letterSpacing: '-0.02em' }}>
+                        <h3 style={{ margin: 0, fontSize: isExpanded ? '18px' : '15px', fontWeight: '700', color: '#111', display: 'flex', alignItems: 'center', gap: '6px', letterSpacing: '-0.02em' }}>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M12 2a10 10 0 1 0 10 10H12V2z"></path>
                                 <path d="M12 12 2.1 12"></path>
@@ -1384,6 +1527,17 @@ export const AiBehaviorMonitor: React.FC = () => {
                 </div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <button
+                        onClick={() => setIsExpanded(!isExpanded)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', color: '#666', display: 'flex', alignItems: 'center' }}
+                        title={isExpanded ? "Collapse UI" : "Expand UI"}
+                    >
+                        {isExpanded ? (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>
+                        ) : (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path></svg>
+                        )}
+                    </button>
+                    <button
                         onClick={() => setIsPaused(!isPaused)}
                         style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: isPaused ? 'red' : 'green' }}
                         title={isPaused ? "Resume Tracking" : "Pause Tracking"}
@@ -1413,8 +1567,10 @@ export const AiBehaviorMonitor: React.FC = () => {
                 executeAgentCommand={executeAgentCommand}
                 apiUrl={apiUrl}
                 apiKey={apiKey}
+                visitorId={visitorId}
                 threadId={threadId}
                 onAddMessage={(msg) => setConversationHistory(prev => [...prev, msg])}
+                isExpanded={isExpanded}
             />
 
             {/* Conversation History */}
@@ -1423,16 +1579,16 @@ export const AiBehaviorMonitor: React.FC = () => {
                     padding: '8px 12px',
                     backgroundColor: 'rgba(0, 0, 0, 0.02)',
                     borderBottom: '1px solid #eaeaea',
-                    maxHeight: '200px',
+                    maxHeight: isExpanded ? '50vh' : '200px',
                     overflowY: 'auto'
                 }}>
-                    <div style={{ fontSize: '10px', color: '#666', marginBottom: '4px', fontWeight: '600' }}>
+                    <div style={{ fontSize: isExpanded ? '13px' : '10px', color: '#666', marginBottom: '4px', fontWeight: '600' }}>
                         Conversation ({conversationHistory.length})
                     </div>
                     {conversationHistory.slice(-5).map((msg, idx) => (
                         <div key={idx} style={{
-                            fontSize: '9px',
-                            padding: '4px 6px',
+                            fontSize: isExpanded ? '12px' : '9px',
+                            padding: isExpanded ? '6px 8px' : '4px 6px',
                             marginBottom: '4px',
                             borderRadius: '4px',
                             backgroundColor: msg.role === 'user' ? '#dbeafe' : msg.role === 'assistant' ? '#d1fae5' : '#fee2e2',
@@ -1557,6 +1713,19 @@ export const AiBehaviorMonitor: React.FC = () => {
                                             fontWeight: 'bold'
                                         }}
                                     >Prompt Feed Data</button>
+                                    <button
+                                        onClick={() => setActiveTab('diff')}
+                                        style={{
+                                            padding: '4px 12px',
+                                            borderRadius: '16px',
+                                            border: 'none',
+                                            backgroundColor: activeTab === 'diff' ? '#0070f3' : '#e0e0e0',
+                                            color: activeTab === 'diff' ? 'white' : '#333',
+                                            cursor: 'pointer',
+                                            fontSize: '12px',
+                                            fontWeight: 'bold'
+                                        }}
+                                    >Visual Diff</button>
                                 </div>
                             </div>
                             <button onClick={() => setShowVisualizationModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '20px' }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
@@ -1595,6 +1764,101 @@ export const AiBehaviorMonitor: React.FC = () => {
                                             />
                                         </div>
                                     )}
+                                </div>
+                            ) : activeTab === 'diff' ? (
+                                <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                    {snapshotHistory.length > 0 && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                            <label style={{ fontSize: '12px', fontWeight: '600', color: '#333', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', verticalAlign: '-2px' }}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg> Compare Iterations
+                                            </label>
+                                            <select
+                                                value={selectedSnapshotId || ''}
+                                                onChange={(e) => {
+                                                    const snapshotId = e.target.value;
+                                                    setSelectedSnapshotId(snapshotId);
+                                                    setHasNewSnapshot(false);
+                                                }}
+                                                style={{
+                                                    padding: '8px 12px',
+                                                    borderRadius: '6px',
+                                                    border: '1px solid #ccc',
+                                                    fontSize: '12px',
+                                                    backgroundColor: 'white',
+                                                    cursor: 'pointer'
+                                                }}
+                                            >
+                                                {[...snapshotHistory].reverse().map((snapshot, displayIndex) => {
+                                                    const time = new Date(snapshot.timestamp).toLocaleTimeString();
+                                                    const size = (snapshot.size / 1024).toFixed(1);
+                                                    const isNewest = displayIndex === 0;
+                                                    return (
+                                                        <option key={snapshot.id} value={snapshot.id}>
+                                                            {isNewest ? <span style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: '#10b981', borderRadius: '50%', marginRight: '6px' }}></span> : null}
+                                                            {time} - {size}KB - {snapshot.url.split('/').pop() || 'page'}
+                                                        </option>
+                                                    );
+                                                })}
+                                            </select>
+                                        </div>
+                                    )}
+
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: '1 1 auto' }}>
+                                        <label style={{ fontSize: '12px', fontWeight: '600', color: '#333' }}>
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', verticalAlign: '-2px' }}><path d="m14 7 3 3"></path><path d="m3 14 3-3 3 3"></path><path d="M17 10v4a2 2 0 0 1-2 2H6"></path></svg> Diff Output
+                                        </label>
+                                        <div style={{
+                                            backgroundColor: '#2d2d2d',
+                                            color: '#ccc',
+                                            padding: '16px',
+                                            borderRadius: '8px',
+                                            fontFamily: 'monospace',
+                                            fontSize: '11px',
+                                            whiteSpace: 'pre-wrap',
+                                            height: '400px',
+                                            overflow: 'auto',
+                                            border: '1px solid #444',
+                                            flexShrink: 0,
+                                            wordBreak: 'break-word'
+                                        }}>
+                                            {(() => {
+                                                if (!selectedSnapshotId || snapshotHistory.length === 0) {
+                                                    return "Waiting for snapshot selection...";
+                                                }
+
+                                                // Find current index explicitly through normal array (not spread reverse array)
+                                                // We want (index - 1) realistically because older = smaller index.
+                                                const currentIndex = snapshotHistory.findIndex(s => s.id === selectedSnapshotId);
+                                                if (currentIndex === -1) return "Snapshot not found.";
+                                                const previousIndex = currentIndex - 1;
+
+                                                if (previousIndex < 0) {
+                                                    return (
+                                                        <div style={{ color: '#888', fontStyle: 'italic', padding: '12px', backgroundColor: '#222', borderRadius: '4px' }}>
+                                                            No previous snapshot exists in the iteration loop to diff against. This is the oldest recorded payload in memory.
+                                                        </div>
+                                                    )
+                                                }
+
+                                                const currentSnapshot = snapshotHistory[currentIndex];
+                                                const previousSnapshot = snapshotHistory[previousIndex];
+                                                const diff = diffChars(previousSnapshot.snapshot, currentSnapshot.snapshot);
+
+                                                return diff.map((part, index) => {
+                                                    const color = part.added ? '#10b981' : part.removed ? '#ef4444' : '#888';
+                                                    return (
+                                                        <span key={index} style={{
+                                                            color,
+                                                            backgroundColor: part.added ? 'rgba(16, 185, 129, 0.1)' : part.removed ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
+                                                            textDecoration: part.removed ? 'line-through' : 'none'
+                                                        }}>
+                                                            {part.value}
+                                                        </span>
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
+                                    </div>
                                 </div>
                             ) : (
                                 <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>

@@ -188,7 +188,7 @@ const nodeRenderers: Partial<RendererMap> = {
         if (maxColumns === 0) return '';
 
         let tableString = '';
-        rows.forEach((row, rowIndex) => {
+        rows.forEach((row) => {
             if (!row || !row.cells) return;
             let currentColumn = 0;
             let rowString = '';
@@ -294,9 +294,16 @@ const nodeRenderers: Partial<RendererMap> = {
         return md;
     },
     button: (node, options, renderChildren, indentLevel) => {
-        const buttonNode = node;
+        const buttonNode = node as any; // Cast safely since ButtonNode type imported elsewhere might need union mapping
         let md = `[Button`;
         if (buttonNode.agentId) md += ` ID: ${buttonNode.agentId}`;
+
+        if (buttonNode.ariaExpanded === true) md += ` Expanded`;
+        else if (buttonNode.ariaExpanded === false) md += ` Collapsed`;
+
+        if (buttonNode.ariaSelected === true) md += ` Selected`;
+        if (buttonNode.ariaPressed === true) md += ` Pressed`;
+
         md += `]`;
 
         const contentString = processNodeContent(buttonNode.content, renderChildren, options, indentLevel);

@@ -21,6 +21,7 @@ export type LinkNode = {
     type: 'link';
     href: string;
     content: SemanticMarkdownAST[];
+    className?: string;
 };
 export type ImageNode = {
     type: 'image';
@@ -94,6 +95,7 @@ export type InputNode = {
     checked?: boolean;
     disabled?: boolean;
     agentId?: string;
+    className?: string;
 };
 export type SelectNode = {
     type: 'select';
@@ -101,12 +103,17 @@ export type SelectNode = {
     options: string[];
     disabled?: boolean;
     agentId?: string;
+    className?: string;
 };
 export type ButtonNode = {
     type: 'button';
     content: SemanticMarkdownAST[];
     disabled?: boolean;
     agentId?: string;
+    ariaExpanded?: boolean;
+    ariaPressed?: boolean;
+    ariaSelected?: boolean;
+    className?: string;
 };
 
 export type MetaDataNode = {

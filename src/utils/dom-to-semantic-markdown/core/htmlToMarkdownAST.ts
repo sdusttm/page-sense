@@ -287,11 +287,19 @@ export function htmlToMarkdownAST(element: Element, options?: ConversionOptions,
             } else if (elem.tagName.toLowerCase() === 'button') {
                 const buttonElem = elem as HTMLButtonElement;
                 debugLog(`Button`);
+
+                const ariaExpanded = buttonElem.getAttribute('aria-expanded');
+                const ariaPressed = buttonElem.getAttribute('aria-pressed');
+                const ariaSelected = buttonElem.getAttribute('aria-selected');
+
                 result.push({
                     type: 'button',
                     content: htmlToMarkdownAST(elem, options, indentLevel + 1),
                     disabled: buttonElem.disabled,
-                    agentId: buttonElem.getAttribute('data-agent-id') || undefined
+                    agentId: buttonElem.getAttribute('data-agent-id') || undefined,
+                    ariaExpanded: ariaExpanded === 'true' ? true : (ariaExpanded === 'false' ? false : undefined),
+                    ariaPressed: ariaPressed === 'true' ? true : (ariaPressed === 'false' ? false : undefined),
+                    ariaSelected: ariaSelected === 'true' ? true : (ariaSelected === 'false' ? false : undefined)
                 });
             } else {
                 const content = escapeMarkdownCharacters(elem.textContent || '');
@@ -301,6 +309,10 @@ export function htmlToMarkdownAST(element: Element, options?: ConversionOptions,
                     case 'style':
                     case 'html':
                         // blackhole..
+                        break;
+                    case 'svg':
+                        debugLog(`SVG Icon`);
+                        result.push({ type: 'text', content: ' ❖ ' });
                         break;
                     case 'strong':
                     case 'b':

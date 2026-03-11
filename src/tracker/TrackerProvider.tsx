@@ -29,6 +29,7 @@ export type TrackerContextType = {
     executeAgentCommand: (action: 'click' | 'type' | 'select', agentId: string, value?: string) => Promise<void>;
     apiUrl: string;
     apiKey?: string;
+    visitorId?: string;
     threadId: string;
 };
 
@@ -80,8 +81,9 @@ export const TrackerProvider: React.FC<{
     maxEvents?: number;
     apiUrl?: string;
     apiKey?: string;
+    visitorId?: string;
     enableCrossPageTracking?: boolean;
-}> = ({ children, maxEvents = 100, apiUrl = '/api', apiKey, enableCrossPageTracking = false }) => {
+}> = ({ children, maxEvents = 100, apiUrl = '/api', apiKey, visitorId, enableCrossPageTracking = false }) => {
     const [events, setEvents] = useState<InteractionEvent[]>([]);
     const [isPaused, setIsPaused] = useState(false);
     const [threadId, setThreadId] = useState<string>('');
@@ -355,7 +357,7 @@ export const TrackerProvider: React.FC<{
     }, [addEvent, isPaused]);
 
     return (
-        <TrackerContext.Provider value={{ events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey, threadId }}>
+        <TrackerContext.Provider value={{ events, isPaused, setIsPaused, executeAgentCommand, apiUrl, apiKey, visitorId, threadId }}>
             {children}
         </TrackerContext.Provider>
     );
