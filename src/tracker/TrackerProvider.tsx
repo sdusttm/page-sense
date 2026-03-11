@@ -313,6 +313,52 @@ export const TrackerProvider: React.FC<{
                 ...extractSemanticData(target),
                 snapshot
             });
+
+            // ==========================================
+            // 📡 HUMAN TELEMETRY SYNC
+            // ==========================================
+            if (apiKey) {
+                const preClickHtml = document.body.outerHTML;
+                const preClickSnapshot = convertHtmlToMarkdown(preClickHtml);
+                const tag_name = target?.tagName?.toLowerCase() || 'unknown';
+                const text_content = (target?.textContent || '').substring(0, 100).trim();
+                const aria_signatures = Array.from(target.attributes || [])
+                    .filter(attr => attr.name.startsWith('aria-') || attr.name === 'role')
+                    .map(attr => `${attr.name}=${attr.value}`)
+                    .join(';');
+
+                // Wait for any UI mutations (dropdowns opening, modals, etc.)
+                setTimeout(async () => {
+                    try {
+                        syncStateToAttributes();
+                        const postClickHtml = document.body.outerHTML;
+                        const postClickSnapshot = convertHtmlToMarkdown(postClickHtml);
+
+                        // Only ping DB if the UI actually structurally changed
+                        if (preClickSnapshot !== postClickSnapshot) {
+                            await fetch(`${apiUrl}/agent/telemetry`, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${apiKey}`,
+                                },
+                                body: JSON.stringify({
+                                    url_pattern: window.location.pathname,
+                                    tag_name,
+                                    text_content,
+                                    aria_signatures,
+                                    action_type: 'click',
+                                    diff_payload: postClickSnapshot, // The resultant DOM structure
+                                    status: 'SUCCESS'
+                                })
+                            });
+                            console.log('[PageSense] 📡 Human Telemetry Diff Synced');
+                        }
+                    } catch (err) {
+                        console.warn('[PageSense] Failed to sync human telemetry:', err);
+                    }
+                }, 1000); // Wait 1s for NextJS renders
+            }
         };
 
         const handleScroll = () => {
