@@ -868,46 +868,50 @@ const AgentInstructionForm = React.memo(({
                 </div>
             )}
             {(successMessage || executionError) && actionHistory.length > 0 && (
-                <div style={{ padding: '8px', backgroundColor: '#f0fdf4', borderRadius: '4px', border: '1px solid #bbf7d0', marginBottom: '8px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#166534', marginBottom: '4px' }}>Feedback? Help the AI improve on this page.</div>
-                    {!feedbackSuccess ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <textarea
-                                value={feedback}
-                                onChange={e => setFeedback(e.target.value)}
-                                placeholder="E.g., You selected the wrong checkout button..."
-                                disabled={isSubmittingFeedback}
-                                rows={2}
-                                style={{ width: '100%', padding: '6px', borderRadius: '4px', border: '1px solid #86efac', fontSize: '11px', resize: 'none', fontFamily: 'inherit' }}
-                            />
-                            <button
-                                onClick={async () => {
-                                    if (!feedback.trim()) return;
-                                    setIsSubmittingFeedback(true);
-                                    try {
-                                        const res = await fetch(`${apiUrl.replace(/\/$/, '')}/feedback`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-                                            body: JSON.stringify({ url: window.location.href, instruction: lastInstruction, feedback, actionHistory, visitorId })
-                                        });
-                                        if (res.ok) setFeedbackSuccess(true);
-                                        else console.error('Feedback failed:', await res.text());
-                                    } catch (err) {
-                                        console.error('Feedback error:', err);
-                                    } finally {
-                                        setIsSubmittingFeedback(false);
-                                    }
-                                }}
-                                disabled={isSubmittingFeedback || !feedback.trim()}
-                                style={{ padding: '4px 8px', backgroundColor: isSubmittingFeedback ? '#ccc' : '#22c55e', color: 'white', border: 'none', borderRadius: '4px', cursor: isSubmittingFeedback || !feedback.trim() ? 'not-allowed' : 'pointer', fontSize: '10px', fontWeight: 'bold', alignSelf: 'flex-end' }}
-                            >
-                                {isSubmittingFeedback ? 'Submitting...' : 'Submit Rules'}
-                            </button>
-                        </div>
-                    ) : (
-                        <div style={{ fontSize: '10px', color: '#166534' }}>✓ Prompt rules generated & saved successfully.</div>
-                    )}
-                </div>
+                <details style={{ padding: '8px', backgroundColor: '#f0fdf4', borderRadius: '4px', border: '1px solid #bbf7d0', marginBottom: '8px', overflow: 'hidden' }}>
+                    <summary style={{ fontSize: '10px', fontWeight: 'bold', color: '#166534', cursor: 'pointer', outline: 'none', userSelect: 'none' }}>
+                        Feedback? Help the AI improve on this page.
+                    </summary>
+                    <div style={{ marginTop: '8px' }}>
+                        {!feedbackSuccess ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <textarea
+                                    value={feedback}
+                                    onChange={e => setFeedback(e.target.value)}
+                                    placeholder="E.g., You selected the wrong checkout button..."
+                                    disabled={isSubmittingFeedback}
+                                    rows={2}
+                                    style={{ width: '100%', padding: '6px', borderRadius: '4px', border: '1px solid #86efac', fontSize: '11px', resize: 'none', fontFamily: 'inherit' }}
+                                />
+                                <button
+                                    onClick={async () => {
+                                        if (!feedback.trim()) return;
+                                        setIsSubmittingFeedback(true);
+                                        try {
+                                            const res = await fetch(`${apiUrl.replace(/\/$/, '')}/feedback`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                                                body: JSON.stringify({ url: window.location.href, instruction: lastInstruction, feedback, actionHistory, visitorId })
+                                            });
+                                            if (res.ok) setFeedbackSuccess(true);
+                                            else console.error('Feedback failed:', await res.text());
+                                        } catch (err) {
+                                            console.error('Feedback error:', err);
+                                        } finally {
+                                            setIsSubmittingFeedback(false);
+                                        }
+                                    }}
+                                    disabled={isSubmittingFeedback || !feedback.trim()}
+                                    style={{ padding: '4px 8px', backgroundColor: isSubmittingFeedback ? '#ccc' : '#22c55e', color: 'white', border: 'none', borderRadius: '4px', cursor: isSubmittingFeedback || !feedback.trim() ? 'not-allowed' : 'pointer', fontSize: '10px', fontWeight: 'bold', alignSelf: 'flex-end' }}
+                                >
+                                    {isSubmittingFeedback ? 'Submitting...' : 'Submit Rules'}
+                                </button>
+                            </div>
+                        ) : (
+                            <div style={{ fontSize: '10px', color: '#166534' }}>✓ Prompt rules generated & saved successfully.</div>
+                        )}
+                    </div>
+                </details>
             )}
             <form
                 onSubmit={(e) => { e.preventDefault(); handleExecuteInstruction(); }}
