@@ -305,7 +305,7 @@ const AgentInstructionForm = React.memo(({
             };
 
             // Helper function to call LLM API
-            const callLLMAgent = async (snapshot: string, previousActions: string[] = []) => {
+            const callLLMAgent = async (snapshot: string, previousActions: string[] = [], agentErrorState?: string) => {
                 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
                 if (apiKey) {
                     headers['Authorization'] = `Bearer ${apiKey}`;
@@ -322,7 +322,8 @@ const AgentInstructionForm = React.memo(({
                         threadId,
                         visitorId,
                         url: window.location.href,
-                        previousActions // Include context of what actions were already taken
+                        previousActions, // Include context of what actions were already taken
+                        agentErrorState
                     })
                 });
 
@@ -347,6 +348,7 @@ const AgentInstructionForm = React.memo(({
             let previousSnapshot: string | null = resumeState?.previousSnapshot || null;
             let lastCommand: any = null;
             let fallbackAttempted = false;
+            let currentErrorState: string | undefined = undefined; // Track logic loops during iteration!
             const startIteration = resumeState ? resumeState.iterationCount : 0;
 
             for (let iteration = startIteration; iteration < maxIterations; iteration++) {
@@ -481,9 +483,10 @@ const AgentInstructionForm = React.memo(({
                                 const failedAction = previousActions[previousActions.length - 1];
                                 const cleanActionName = failedAction.split(" (❌")[0].split(" ->")[0];
 
-                                // 3. Push a single, commanding error message AFTER the failed action
-                                previousActions.push(`❌ ERROR: Your action ('${cleanActionName}') produced NO visual changes. If you just clicked a Save/Submit button, it might be a silent save. If your ultimate objective is already visibly fulfilled on the screen, please return isComplete: true. Otherwise, try a DIFFERENT action. DO NOT repeat the exact same action!`);
+                                // 3. Flag the specific zero-diff structural warning natively
+                                previousActions.push(`❌ Action ('${cleanActionName}') produced NO visual changes.`);
                                 setLiveActions([...previousActions]);
+                                currentErrorState = 'zero-diff';
                             }
                         }
                     }
@@ -492,7 +495,11 @@ const AgentInstructionForm = React.memo(({
                 }
 
                 // 2. Ask LLM for next action based on current snapshot
-                const data = await callLLMAgent(snapshot, previousActions);
+                const data = await callLLMAgent(snapshot, previousActions, currentErrorState);
+
+                // Clear the error state eagerly after sending it to the LLM so it doesn't pollute the next successful loop!
+                currentErrorState = undefined;
+
                 console.log(`[Iteration ${iteration + 1}] LLM response:`, {
                     commands: data.commands?.length || 0,
                     isComplete: data.isComplete,
@@ -530,8 +537,8 @@ const AgentInstructionForm = React.memo(({
                     lastCommand.agent_id === cmd.agent_id &&
                     lastCommand.value === cmd.value) {
 
-                    // Check if the last action we recorded was our custom ❌ ERROR message for zero-diff
-                    if (previousActions.length > 0 && previousActions[previousActions.length - 1].startsWith('❌ ERROR:')) {
+                    // Check if the last action we recorded was our custom ❌ Action failed message
+                    if (previousActions.length > 0 && previousActions[previousActions.length - 1].startsWith('❌ Action')) {
                         console.error(`[Iteration ${iteration + 1}] 🛑 LOOP BREAKER TRIGGERED: LLM forcefully repeated a failed command. Aborting execution.`);
                         setExecutionError("Execution aborted: The AI agent got stuck in a repetitive loop attempting an action that produces no visual feedback.");
                         break;
@@ -551,9 +558,10 @@ const AgentInstructionForm = React.memo(({
                         setExecutionError(`Execution aborted: The AI agent got stuck in a repetitive conceptual loop, endlessly toggling the same element without progressing.`);
                         break;
                     } else if (last1 === last2 && last1.startsWith(newActionStr)) {
-                        // If repeated 3 times natively, inject a stern warning to force it to look elsewhere
-                        previousActions.push(`❌ ERROR: You have repeated this exact action 3 times in a row! It is NOT working. You are stuck in a reasoning loop opening and closing the same menu. STOP clicking this element and try a COMPLETELY DIFFERENT approach. Remember to look at the entire page, including top-level category buttons!`);
+                        // If repeated 3 times natively, inject the error flag to the backend!
+                        previousActions.push(`❌ Action repeated 3 times natively.`);
                         setLiveActions([...previousActions]);
+                        currentErrorState = 'toggle-loop';
                     }
                 }
 
